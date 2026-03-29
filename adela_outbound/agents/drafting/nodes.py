@@ -8,11 +8,17 @@ from typing import Optional
 
 import aiosqlite
 from anthropic import AsyncAnthropic
+from langgraph.types import interrupt
 
 from adela_outbound.agents.drafting.channels.email import draft_email
 from adela_outbound.agents.drafting.channels.github import draft_github_comment
 from adela_outbound.agents.drafting.channels.linkedin import draft_linkedin
 from adela_outbound.agents.drafting.events import drafting_sse_queues
+from adela_outbound.agents.drafting.sender import (
+    post_github_comment,
+    send_email,
+    send_linkedin,
+)
 from adela_outbound.agents.drafting.state import DraftingState
 from adela_outbound.config import config
 from adela_outbound.db.contracts import ProspectBrief, QualificationBrief
@@ -206,4 +212,117 @@ async def channel_router(state: DraftingState) -> DraftingState:
         await q.put(event_data)
 
     state["outreach_package"] = package_dict
+    return state
+
+
+async def hitl_gate_node(state: DraftingState) -> DraftingState:
+    """Pause the graph for human review via LangGraph interrupt()."""
+    interrupt(
+        {"company_id": state["company_id"], "package": state["outreach_package"]}
+    )
+    return state
+
+
+async def resume_handler(state: DraftingState) -> DraftingState:
+    """Handle human decision: approve, reject, or redraft."""
+    decision = state.get("decision")
+    company_id = state["company_id"]
+    package = state.get("outreach_package") or {}
+
+    if decision == "approved":
+        # Apply edited draft if provided
+        if state.get("edited_draft") and package.get("primary_draft"):
+            package["primary_draft"]["body"] = state["edited_draft"]
+
+        # Send via the appropriate channel
+        send_result: Optional[dict] = None
+        channel = package.get("primary_channel", "email")
+        try:
+            if channel == "email":
+                send_result = await send_email(
+                    company_id,
+                    "",  # to_address resolved by sender from DB
+                    package.get("primary_draft", {}).get("subject", ""),
+                    package.get("primary_draft", {}).get("body", ""),
+                )
+            elif channel == "github":
+                send_result = await post_github_comment(
+                    company_id,
+                    package.get("primary_draft", {}).get("issue_url", ""),
+                    package.get("primary_draft", {}).get("comment_body", ""),
+                )
+            elif channel == "linkedin":
+                send_result = await send_linkedin(
+                    company_id,
+                    "",  # profile_url resolved by sender from DB
+                    package.get("primary_draft", {}).get("body", ""),
+                )
+            else:
+                send_result = {"success": False, "error": f"Unknown channel: {channel}"}
+        except Exception as e:
+            logger.error(f"Send failed for {company_id}: {e}")
+            send_result = {"success": False, "error": str(e)}
+
+        new_status = "sent" if send_result and send_result.get("success") else "send_failed"
+        package["status"] = new_status
+        package["send_result"] = send_result
+
+        # Update outreach_packages in DB
+        async with aiosqlite.connect(config.DB_PATH) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute(
+                """UPDATE outreach_packages
+                   SET status = ?, send_result = ?, primary_draft = ?
+                   WHERE company_id = ?""",
+                (
+                    new_status,
+                    json.dumps(send_result),
+                    json.dumps(package.get("primary_draft")),
+                    company_id,
+                ),
+            )
+            await conn.commit()
+
+            # Write to outreach_log
+            await conn.execute(
+                """INSERT INTO outreach_log
+                   (id, company_id, package_id, channel, sent_at, success, error, message_preview)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    str(uuid.uuid4()),
+                    company_id,
+                    package.get("id", ""),
+                    channel,
+                    datetime.utcnow().isoformat(),
+                    1 if send_result and send_result.get("success") else 0,
+                    send_result.get("error") if send_result else None,
+                    (package.get("primary_draft", {}).get("body", ""))[:200],
+                ),
+            )
+            await conn.commit()
+
+        state["outreach_package"] = package
+
+    elif decision == "rejected":
+        if state.get("redraft_feedback"):
+            # Redraft: clear decision so conditional edge routes back to channel_router
+            state["decision"] = None
+            # redraft_feedback is already set from the API endpoint
+        else:
+            # Final rejection — no redraft
+            package["status"] = "rejected"
+            package["rejection_note"] = state.get("rejection_note")
+
+            async with aiosqlite.connect(config.DB_PATH) as conn:
+                conn.row_factory = aiosqlite.Row
+                await conn.execute(
+                    """UPDATE outreach_packages
+                       SET status = ?, rejection_note = ?
+                       WHERE company_id = ?""",
+                    ("rejected", state.get("rejection_note"), company_id),
+                )
+                await conn.commit()
+
+            state["outreach_package"] = package
+
     return state

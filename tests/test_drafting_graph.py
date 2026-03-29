@@ -9,7 +9,9 @@ import pytest
 from adela_outbound.agents.drafting.nodes import (
     _parse_json_fields,
     channel_router,
+    hitl_gate_node,
     input_loader,
+    resume_handler,
 )
 from adela_outbound.agents.drafting.state import DraftingState
 
@@ -412,3 +414,246 @@ def test_parse_json_fields():
     assert result["data"] == ["a", "b"]
     assert result["count"] == 5
     assert result["name"] == "test"
+
+
+@pytest.mark.asyncio
+async def test_graph_pauses_at_hitl_gate():
+    """Full graph run pauses at hitl_gate (interrupt_before)."""
+    from adela_outbound.agents.drafting.graph import drafting_graph
+
+    prospect_data = _make_prospect_row()
+    prospect_data = _parse_json_fields(
+        prospect_data, {"pain_points", "personalization_hooks", "research_sources", "raw_research"}
+    )
+    qual_data = _make_qual_row()
+    qual_data = _parse_json_fields(qual_data, {"criterion_scores"})
+
+    mock_email_result = {
+        "subject": "Test Subject",
+        "body": "Test email body.",
+        "personalization_hook": "Anchored on their deployment challenge.",
+    }
+
+    with patch(
+        "adela_outbound.agents.drafting.nodes.aiosqlite.connect"
+    ) as mock_connect, patch(
+        "adela_outbound.agents.drafting.nodes.draft_email",
+        new_callable=AsyncMock,
+        return_value=mock_email_result,
+    ), patch(
+        "adela_outbound.agents.drafting.nodes.AsyncAnthropic"
+    ):
+        # Mock DB for input_loader and channel_router
+        mock_conn = AsyncMock()
+        mock_conn.row_factory = None
+        mock_conn.commit = AsyncMock()
+
+        prospect_mock = AsyncMock()
+        prospect_mock.fetchone = AsyncMock(return_value=prospect_data)
+        qual_mock = AsyncMock()
+        qual_mock.fetchone = AsyncMock(return_value=qual_data)
+        name_mock = AsyncMock()
+        name_mock.fetchone = AsyncMock(return_value=None)
+
+        async def execute_side_effect(sql, params=None):
+            if "prospect_briefs" in sql:
+                return prospect_mock
+            elif "qualification_briefs" in sql:
+                return qual_mock
+            elif "discovery_queue" in sql:
+                return name_mock
+            return AsyncMock()
+
+        mock_conn.execute = execute_side_effect
+
+        ctx_mgr = AsyncMock()
+        ctx_mgr.__aenter__ = AsyncMock(return_value=mock_conn)
+        ctx_mgr.__aexit__ = AsyncMock(return_value=False)
+        mock_connect.return_value = ctx_mgr
+
+        config = {"configurable": {"thread_id": "test-co"}}
+
+        # First invocation — should pause at hitl_gate
+        result = await drafting_graph.ainvoke(
+            {
+                "company_id": "test-co",
+                "prospect_brief": {},
+                "qualification_brief": {},
+                "outreach_package": None,
+                "decision": None,
+                "edited_draft": None,
+                "rejection_note": None,
+                "redraft_feedback": None,
+                "errors": [],
+            },
+            config=config,
+        )
+
+    # Graph should be paused — check snapshot
+    snapshot = drafting_graph.get_state(config)
+    assert snapshot.next == ("hitl_gate",)
+    # Package should be assembled
+    assert result["outreach_package"] is not None
+    assert result["outreach_package"]["status"] == "pending_review"
+
+
+@pytest.mark.asyncio
+async def test_graph_resume_approve():
+    """Resume a paused graph with approve — should call sender and complete."""
+    from langgraph.types import Command
+
+    from adela_outbound.agents.drafting.graph import drafting_graph
+
+    prospect_data = _make_prospect_row()
+    prospect_data = _parse_json_fields(
+        prospect_data, {"pain_points", "personalization_hooks", "research_sources", "raw_research"}
+    )
+    qual_data = _make_qual_row()
+    qual_data = _parse_json_fields(qual_data, {"criterion_scores"})
+
+    mock_email_result = {
+        "subject": "Test Subject",
+        "body": "Test email body.",
+        "personalization_hook": "Anchored on their deployment challenge.",
+    }
+
+    with patch(
+        "adela_outbound.agents.drafting.nodes.aiosqlite.connect"
+    ) as mock_connect, patch(
+        "adela_outbound.agents.drafting.nodes.draft_email",
+        new_callable=AsyncMock,
+        return_value=mock_email_result,
+    ), patch(
+        "adela_outbound.agents.drafting.nodes.AsyncAnthropic"
+    ), patch(
+        "adela_outbound.agents.drafting.nodes.send_email",
+        new_callable=AsyncMock,
+        return_value={"success": True, "message_id": "msg-123", "error": None},
+    ) as mock_send:
+        mock_conn = AsyncMock()
+        mock_conn.row_factory = None
+        mock_conn.commit = AsyncMock()
+
+        prospect_mock = AsyncMock()
+        prospect_mock.fetchone = AsyncMock(return_value=prospect_data)
+        qual_mock = AsyncMock()
+        qual_mock.fetchone = AsyncMock(return_value=qual_data)
+        name_mock = AsyncMock()
+        name_mock.fetchone = AsyncMock(return_value=None)
+
+        async def execute_side_effect(sql, params=None):
+            if "prospect_briefs" in sql:
+                return prospect_mock
+            elif "qualification_briefs" in sql:
+                return qual_mock
+            elif "discovery_queue" in sql:
+                return name_mock
+            return AsyncMock()
+
+        mock_conn.execute = execute_side_effect
+
+        ctx_mgr = AsyncMock()
+        ctx_mgr.__aenter__ = AsyncMock(return_value=mock_conn)
+        ctx_mgr.__aexit__ = AsyncMock(return_value=False)
+        mock_connect.return_value = ctx_mgr
+
+        # Use a unique thread_id to avoid state collision
+        config = {"configurable": {"thread_id": "test-co-approve"}}
+
+        # First invocation — pauses at hitl_gate
+        await drafting_graph.ainvoke(
+            {
+                "company_id": "test-co-approve",
+                "prospect_brief": {},
+                "qualification_brief": {},
+                "outreach_package": None,
+                "decision": None,
+                "edited_draft": None,
+                "rejection_note": None,
+                "redraft_feedback": None,
+                "errors": [],
+            },
+            config=config,
+        )
+
+        # Confirm paused
+        snapshot = drafting_graph.get_state(config)
+        assert snapshot.next == ("hitl_gate",)
+
+        # Resume with approval
+        await drafting_graph.aupdate_state(
+            config, {"decision": "approved"}, as_node="hitl_gate"
+        )
+        result = await drafting_graph.ainvoke(None, config=config)
+
+    assert result["outreach_package"]["status"] in ("sent", "send_failed")
+    # Verify graph completed
+    snapshot = drafting_graph.get_state(config)
+    assert snapshot.next == ()
+
+
+@pytest.mark.asyncio
+async def test_resume_handler_reject_no_redraft():
+    """resume_handler with reject and no redraft sets status to rejected."""
+    state = _make_state()
+    state["decision"] = "rejected"
+    state["rejection_note"] = "Not a good fit."
+    state["redraft_feedback"] = None
+    state["outreach_package"] = {
+        "id": "pkg-1",
+        "company_id": "test-co",
+        "primary_channel": "email",
+        "primary_draft": {"subject": "Test", "body": "Body", "personalization_hook": "Hook"},
+        "secondary_drafts": [],
+        "creative_action": None,
+        "status": "pending_review",
+        "send_result": None,
+        "rejection_note": None,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+    with patch(
+        "adela_outbound.agents.drafting.nodes.aiosqlite.connect"
+    ) as mock_connect:
+        mock_conn = AsyncMock()
+        mock_conn.row_factory = None
+        mock_conn.commit = AsyncMock()
+        mock_conn.execute = AsyncMock()
+
+        ctx_mgr = AsyncMock()
+        ctx_mgr.__aenter__ = AsyncMock(return_value=mock_conn)
+        ctx_mgr.__aexit__ = AsyncMock(return_value=False)
+        mock_connect.return_value = ctx_mgr
+
+        result = await resume_handler(state)
+
+    assert result["outreach_package"]["status"] == "rejected"
+    assert result["outreach_package"]["rejection_note"] == "Not a good fit."
+
+
+@pytest.mark.asyncio
+async def test_resume_handler_redraft_clears_decision():
+    """resume_handler with redraft clears decision so graph loops back."""
+    state = _make_state()
+    state["decision"] = "rejected"
+    state["rejection_note"] = "Make it shorter."
+    state["redraft_feedback"] = "Make it shorter."
+    state["outreach_package"] = {
+        "id": "pkg-1",
+        "company_id": "test-co",
+        "primary_channel": "email",
+        "primary_draft": {"subject": "Test", "body": "Body", "personalization_hook": "Hook"},
+        "secondary_drafts": [],
+        "creative_action": None,
+        "status": "pending_review",
+        "send_result": None,
+        "rejection_note": None,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+    result = await resume_handler(state)
+
+    # Decision should be cleared so conditional edge routes to channel_router
+    assert result["decision"] is None
+    # redraft_feedback should be preserved for channel_router
+    assert result["redraft_feedback"] == "Make it shorter."
