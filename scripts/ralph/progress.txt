@@ -7,6 +7,9 @@
 - Config singleton: `from adela_outbound.config import config`
 - DB connection: `from adela_outbound.db.connection import get_db` used as `async with get_db() as conn:`
 - pytest with `asyncio_mode = auto` in pytest.ini — no need for `@pytest.mark.asyncio` decorator
+- Router imports of graph module should be inside function bodies to avoid circular imports at module level
+- Route ordering: define GET /queue before GET /{company_id}/brief to avoid path param capture conflict
+- SSE pattern: asyncio.Queue per client, append to events.sse_queues, StreamingResponse with keepalive
 
 ## 2026-03-29 - US-001
 - Created all qualification agent scaffold and stub files
@@ -93,4 +96,22 @@
   - Command(resume=data) merges data into graph state on resume
   - Module-level graph build (builder, compile) runs at import time — keep it lightweight
   - The conditional edge map keys must match the return values of _route_after_brief exactly
+---
+
+## 2026-03-29 - US-006
+- Replaced qualification router stub with full implementation: 6 endpoints
+- Endpoints: POST /run/{company_id}, POST /approve/{company_id}, POST /reject/{company_id}, GET /queue, GET /{company_id}/brief, GET /stream
+- RejectRequest pydantic model with field_validator ensures rejection note is non-empty
+- Approve/reject endpoints check graph paused state via qualification_graph.get_state(config).next
+- GET /queue returns pending_review briefs ordered by fit_score DESC
+- GET /{company_id}/brief includes criterion_scores (JSON parsed) and prospect_brief_summary
+- GET /stream uses SSE with asyncio.Queue and qual_events.sse_queues
+- Files changed:
+  - adela_outbound/api/routers/qualification.py (full implementation replacing stub)
+- All 9 tests PASSED
+- **Learnings for future iterations:**
+  - Graph imports (qualification_graph, run_qualification, resume_qualification) are inside function bodies to avoid circular imports
+  - qualification_graph.get_state(config).next returns tuple of next nodes if paused, empty/None if completed
+  - Route ordering matters: GET /queue must be defined before GET /{company_id}/brief to avoid path parameter capture
+  - SSE pattern: create asyncio.Queue, append to sse_queues list, yield from queue in StreamingResponse generator, remove on disconnect
 ---

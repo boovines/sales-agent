@@ -235,7 +235,7 @@
       "id": "US-006",
       "title": "HITL resume/reject API endpoints with mandatory rejection note enforcement",
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "description": "Implement the HITL endpoints for qualifying and rejecting briefs. Rejection notes are mandatory \u2014 the API returns 400 if the note is missing or empty. These are the most important endpoints in the system.",
       "acceptanceCriteria": [
         "adela_outbound/api/routers/qualification.py \u2014 replace stub with full implementation.",
