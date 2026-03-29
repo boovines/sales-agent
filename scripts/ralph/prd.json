@@ -215,7 +215,7 @@
       "id": "US-005",
       "title": "LangGraph graph assembly with MemorySaver, run_qualification, and resume_qualification",
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "description": "Assemble the StateGraph with MemorySaver checkpointer, implement run_qualification() and resume_qualification() functions, and write a conditional edge for auto-disqualified companies.",
       "acceptanceCriteria": [
         "adela_outbound/agents/qualification/graph.py \u2014 replace stub with full implementation.",

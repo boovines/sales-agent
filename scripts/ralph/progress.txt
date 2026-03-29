@@ -56,6 +56,9 @@
   - AsyncMock from unittest.mock works well for mocking anthropic client.messages.create
   - aggregate_scores is pure sync — no async needed, trivially testable without mocks
   - WEIGHT_VALUES and FIT_TIER_THRESHOLDS are module-level dicts for easy tuning
+- LangGraph Command import: `from langgraph.types import Command` — used for resume payload
+- Graph compile with interrupt: `builder.compile(checkpointer=checkpointer, interrupt_before=['hitl_gate'])`
+- thread_id=company_id pattern: each company has one graph checkpoint, re-runs overwrite
 ---
 
 ## 2026-03-29 - US-004
@@ -74,4 +77,20 @@
   - The auto-disqualify path writes to DB inside qualification_brief_builder and sets decision='auto_rejected', then resume_handler has an elif branch that does nothing (already written)
   - Markdown fence stripping pattern is reused from scorer.py for Claude JSON responses
   - broadcast() from events.py is called only for pending_review briefs, not auto-rejected ones
+---
+
+## 2026-03-29 - US-005
+- Replaced graph.py stub with full LangGraph StateGraph assembly
+- Module-level MemorySaver checkpointer singleton, 6-node graph with conditional edge for auto-disqualify
+- run_qualification: ainvoke with initial state, returns at HITL interrupt
+- resume_qualification: ainvoke with Command(resume=...) to merge decision into state
+- _route_after_brief: conditional edge routing auto_rejected to resume_handler, others to hitl_gate
+- Files changed:
+  - adela_outbound/agents/qualification/graph.py (full implementation replacing stub)
+- All 9 tests PASSED
+- **Learnings for future iterations:**
+  - Graph compile with interrupt_before returns state dict on pause (not exception)
+  - Command(resume=data) merges data into graph state on resume
+  - Module-level graph build (builder, compile) runs at import time — keep it lightweight
+  - The conditional edge map keys must match the return values of _route_after_brief exactly
 ---
