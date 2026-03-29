@@ -292,7 +292,7 @@
       "id": "US-009",
       "title": "Integration test \u2014 full graph run with HITL pause and resume",
       "priority": 9,
-      "passes": false,
+      "passes": true,
       "description": "Write an integration test that runs the full qualification graph, verifies it pauses at the HITL interrupt, then resumes with an approval decision and verifies the SQLite output.",
       "acceptanceCriteria": [
         "tests/test_qualification_graph.py \u2014 replace placeholder with full integration test.",

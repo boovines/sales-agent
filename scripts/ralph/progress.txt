@@ -60,7 +60,7 @@
   - AsyncMock from unittest.mock works well for mocking anthropic client.messages.create
   - aggregate_scores is pure sync — no async needed, trivially testable without mocks
   - WEIGHT_VALUES and FIT_TIER_THRESHOLDS are module-level dicts for easy tuning
-- LangGraph Command import: `from langgraph.types import Command` — used for resume payload
+- LangGraph `interrupt_before` resume pattern: use `graph.aupdate_state(config, update)` then `graph.ainvoke(None, config)` — NOT `Command(resume=...)` which is for `interrupt()` function calls
 - Graph compile with interrupt: `builder.compile(checkpointer=checkpointer, interrupt_before=['hitl_gate'])`
 - thread_id=company_id pattern: each company has one graph checkpoint, re-runs overwrite
 ---
@@ -140,4 +140,20 @@
   - scheduler.add_job with replace_existing=True is safe to call multiple times (idempotent)
   - generate_icp_suggestions uses separate get_db() context managers for read and write — avoids holding connection open during Claude call
   - save_icp_suggestion stores new_criteria as JSON string in suggestion_text field — accept_suggestion endpoint parses it back
+---
+
+## 2026-03-29 - US-009
+- Replaced placeholder test with full integration tests: test_hitl_pause_and_resume_approval and test_auto_disqualify
+- Fixed graph.py resume_qualification to use aupdate_state + ainvoke(None) instead of Command(resume=...) — the latter is for interrupt() function calls, not interrupt_before
+- test_hitl_pause_and_resume_approval: sets up DB with discovery_queue + prospect_brief + ICP, mocks score_all_criteria and AsyncAnthropic, verifies graph pauses at hitl_gate, brief written as pending_review, then resumes with approval and verifies DB updated
+- test_auto_disqualify: all scores=0, verifies auto_rejected status, discovery_queue=disqualified, graph not paused
+- Files changed:
+  - tests/test_qualification_graph.py (full integration test replacing placeholder)
+  - adela_outbound/agents/qualification/graph.py (fixed resume_qualification)
+- All 10 tests PASSED
+- **Learnings for future iterations:**
+  - LangGraph interrupt_before resume: use `graph.aupdate_state(config, state_update)` then `graph.ainvoke(None, config)` — Command(resume=...) is for interrupt() calls only
+  - Patching needs 3 config modules: connection.config, nodes.config, scorer.config for DB_PATH and API key
+  - MemorySaver checkpointer is module-level singleton — shared across tests in same process, use unique company_ids per test
+  - _make_strong_scores() helper with score=2 per criterion yields fit_tier > disqualified; _make_zero_scores() with score=0 yields fit_tier=disqualified
 ---
