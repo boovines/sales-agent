@@ -256,7 +256,7 @@
       "id": "US-007",
       "title": "ICP management endpoints \u2014 read, update, suggestions",
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "description": "Implement the ICP management endpoints that allow the dashboard to read the current ICP, save new versions, and manage refinement suggestions.",
       "acceptanceCriteria": [
         "adela_outbound/api/routers/qualification.py \u2014 add ICP endpoints.",

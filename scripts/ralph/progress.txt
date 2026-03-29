@@ -10,6 +10,7 @@
 - Router imports of graph module should be inside function bodies to avoid circular imports at module level
 - Route ordering: define GET /queue before GET /{company_id}/brief to avoid path param capture conflict
 - SSE pattern: asyncio.Queue per client, append to events.sse_queues, StreamingResponse with keepalive
+- ICP imports (load_icp, save_icp_version, save_icp_suggestion) are at module level in qualification.py — no circular import issue since icp.py has no graph dependency
 
 ## 2026-03-29 - US-001
 - Created all qualification agent scaffold and stub files
@@ -114,4 +115,15 @@
   - qualification_graph.get_state(config).next returns tuple of next nodes if paused, empty/None if completed
   - Route ordering matters: GET /queue must be defined before GET /{company_id}/brief to avoid path parameter capture
   - SSE pattern: create asyncio.Queue, append to sse_queues list, yield from queue in StreamingResponse generator, remove on disconnect
+---
+
+## 2026-03-29 - US-007
+- Added 5 ICP management endpoints to qualification router: GET /icp, PUT /icp, GET /icp/suggestions, POST /icp/suggestions/{id}/accept, POST /icp/suggestions/{id}/reject
+- Files changed:
+  - adela_outbound/api/routers/qualification.py (added ICP endpoints + icp module imports)
+- All 9 tests PASSED
+- **Learnings for future iterations:**
+  - ICP imports (load_icp, save_icp_version, save_icp_suggestion) can be at module level — no circular import issue since icp.py doesn't depend on graph.py
+  - Route ordering: /icp and /icp/suggestions placed before /{company_id}/brief to avoid path param capture
+  - accept_suggestion parses suggestion_text as JSON criteria — suggestion_text must contain serialized criteria list (enforced by US-008 weekly job)
 ---
