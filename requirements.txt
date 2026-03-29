@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+langgraph
+aiosqlite
+pydantic
+pydantic-settings
+httpx
+apscheduler
+openai
+python-dotenv
+pytest
+pytest-asyncio
+anthropic
