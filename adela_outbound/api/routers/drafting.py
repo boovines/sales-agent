@@ -5,7 +5,7 @@ import logging
 from typing import Optional
 
 import aiosqlite
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from adela_outbound.config import config
@@ -150,3 +150,106 @@ async def list_pending_drafts():
         )
 
     return results
+
+
+@router.get("/agents/drafting/{company_id}/package")
+async def get_package(company_id: str):
+    async with aiosqlite.connect(config.DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+
+        cursor = await conn.execute(
+            "SELECT * FROM outreach_packages WHERE company_id = ?",
+            (company_id,),
+        )
+        pkg_row = await cursor.fetchone()
+        if pkg_row is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No outreach package found for company_id {company_id}",
+            )
+        pkg = dict(pkg_row)
+
+        # Parse JSON columns
+        try:
+            primary_draft = json.loads(pkg["primary_draft"])
+        except (json.JSONDecodeError, TypeError):
+            primary_draft = {}
+        try:
+            secondary_drafts = json.loads(pkg["secondary_drafts"])
+        except (json.JSONDecodeError, TypeError):
+            secondary_drafts = []
+        creative_action = None
+        if pkg.get("creative_action"):
+            try:
+                creative_action = json.loads(pkg["creative_action"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        send_result = None
+        if pkg.get("send_result"):
+            try:
+                send_result = json.loads(pkg["send_result"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Fetch brief_summary and adela_relevance from prospect_briefs
+        cursor = await conn.execute(
+            "SELECT summary, adela_relevance FROM prospect_briefs WHERE company_id = ?",
+            (company_id,),
+        )
+        brief_row = await cursor.fetchone()
+        brief_dict = dict(brief_row) if brief_row else {}
+
+    return {
+        "personalization_hook": primary_draft.get("personalization_hook"),
+        "company_id": pkg["company_id"],
+        "primary_channel": pkg["primary_channel"],
+        "primary_draft": primary_draft,
+        "secondary_drafts": secondary_drafts,
+        "creative_action": creative_action,
+        "status": pkg["status"],
+        "send_result": send_result,
+        "rejection_note": pkg.get("rejection_note"),
+        "created_at": pkg["created_at"],
+        "brief_summary": brief_dict.get("summary"),
+        "adela_relevance": brief_dict.get("adela_relevance"),
+    }
+
+
+@router.get("/outreach/log")
+async def get_outreach_log(
+    start_date: Optional[str] = Query(default=None),
+    end_date: Optional[str] = Query(default=None),
+):
+    query = """SELECT ol.company_id, ol.channel, ol.sent_at, ol.success, ol.error,
+                      dc.company_name
+               FROM outreach_log ol
+               LEFT JOIN discovery_queue dc ON ol.company_id = dc.id"""
+    conditions = []
+    params: list[str] = []
+
+    if start_date:
+        conditions.append("ol.sent_at >= ?")
+        params.append(start_date)
+    if end_date:
+        conditions.append("ol.sent_at <= ?")
+        params.append(end_date)
+
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+
+    async with aiosqlite.connect(config.DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(query, params)
+        rows = await cursor.fetchall()
+
+    return [
+        {
+            "company_id": dict(row)["company_id"],
+            "company_name": dict(row).get("company_name"),
+            "channel": dict(row)["channel"],
+            "sent_at": dict(row)["sent_at"],
+            "success": bool(dict(row)["success"]),
+            "error": dict(row).get("error"),
+        }
+        for row in rows
+    ]

@@ -246,6 +246,161 @@ async def test_list_pending_drafts(client: httpx.AsyncClient):
         assert data[0]["fit_tier"] == "Tier 1"
 
 
+# ---------------------------------------------------------------------------
+# GET /agents/drafting/{company_id}/package
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_package_success(client: httpx.AsyncClient):
+    pkg_row = {
+        "id": "pkg-1",
+        "company_id": "co-1",
+        "primary_channel": "email",
+        "primary_draft": json.dumps(
+            {
+                "subject": "Test Subject",
+                "body": "Test body",
+                "personalization_hook": "Hook for co-1",
+            }
+        ),
+        "secondary_drafts": json.dumps([]),
+        "creative_action": None,
+        "status": "pending_review",
+        "send_result": None,
+        "rejection_note": None,
+        "created_at": "2026-03-29T10:00:00",
+    }
+    brief_row = {
+        "summary": "They build multi-tenant platforms",
+        "adela_relevance": "Context layer for deployments",
+    }
+
+    with patch(
+        "adela_outbound.api.routers.drafting.aiosqlite"
+    ) as mock_aiosqlite:
+        mock_conn = AsyncMock()
+        mock_conn.row_factory = None
+        mock_cursor_pkg = AsyncMock()
+        mock_cursor_pkg.fetchone = AsyncMock(return_value=pkg_row)
+        mock_cursor_brief = AsyncMock()
+        mock_cursor_brief.fetchone = AsyncMock(return_value=brief_row)
+        mock_conn.execute = AsyncMock(
+            side_effect=[mock_cursor_pkg, mock_cursor_brief]
+        )
+
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_aiosqlite.connect.return_value = ctx
+        mock_aiosqlite.Row = object
+
+        resp = await client.get("/agents/drafting/co-1/package")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["company_id"] == "co-1"
+        assert data["personalization_hook"] == "Hook for co-1"
+        assert data["primary_draft"]["personalization_hook"] == "Hook for co-1"
+        assert data["brief_summary"] == "They build multi-tenant platforms"
+        assert data["adela_relevance"] == "Context layer for deployments"
+        assert data["status"] == "pending_review"
+
+
+@pytest.mark.asyncio
+async def test_get_package_not_found(client: httpx.AsyncClient):
+    with patch(
+        "adela_outbound.api.routers.drafting.aiosqlite"
+    ) as mock_aiosqlite:
+        mock_conn = AsyncMock()
+        mock_conn.row_factory = None
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchone = AsyncMock(return_value=None)
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_aiosqlite.connect.return_value = ctx
+        mock_aiosqlite.Row = object
+
+        resp = await client.get("/agents/drafting/nonexistent/package")
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /outreach/log
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_outreach_log(client: httpx.AsyncClient):
+    log_rows = [
+        {
+            "company_id": "co-1",
+            "company_name": "Test Company",
+            "channel": "email",
+            "sent_at": "2026-03-29T10:00:00",
+            "success": 1,
+            "error": None,
+        },
+    ]
+
+    with patch(
+        "adela_outbound.api.routers.drafting.aiosqlite"
+    ) as mock_aiosqlite:
+        mock_conn = AsyncMock()
+        mock_conn.row_factory = None
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=log_rows)
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_aiosqlite.connect.return_value = ctx
+        mock_aiosqlite.Row = object
+
+        resp = await client.get("/outreach/log")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["company_id"] == "co-1"
+        assert data[0]["success"] is True
+        assert data[0]["channel"] == "email"
+
+
+@pytest.mark.asyncio
+async def test_get_outreach_log_with_date_filter(client: httpx.AsyncClient):
+    with patch(
+        "adela_outbound.api.routers.drafting.aiosqlite"
+    ) as mock_aiosqlite:
+        mock_conn = AsyncMock()
+        mock_conn.row_factory = None
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_aiosqlite.connect.return_value = ctx
+        mock_aiosqlite.Row = object
+
+        resp = await client.get(
+            "/outreach/log",
+            params={"start_date": "2026-03-01", "end_date": "2026-03-31"},
+        )
+        assert resp.status_code == 200
+
+        # Verify that the SQL query included WHERE conditions
+        call_args = mock_conn.execute.call_args
+        query = call_args[0][0]
+        params = call_args[0][1]
+        assert "ol.sent_at >= ?" in query
+        assert "ol.sent_at <= ?" in query
+        assert params == ["2026-03-01", "2026-03-31"]
+
+
 @pytest.mark.asyncio
 async def test_list_pending_drafts_skips_missing_hook(client: httpx.AsyncClient):
     """Rows with missing personalization_hook or company_name are skipped."""
