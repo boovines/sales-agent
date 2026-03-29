@@ -1,0 +1,360 @@
+{
+  "project": "Adela",
+  "branchName": "boovines/varick-demo",
+  "description": "Adela Varick Demo — End-to-end governed SOP lifecycle. Ingest documents into knowledge graph, detect SOP gaps via agent signals, propose governed patches with traceability, approve/reject with versioning. Includes KG visualization, SOP diff page, live SOP test, and benchmark page. Demo date: March 13, 2026.",
+  "techStack": {
+    "frontend": "Next.js 16 / React 19 (TypeScript), deployed on Vercel",
+    "backend": "Python FastAPI sidecar (adela-graphiti-sidecar/) with Graphiti + Kuzu knowledge graph",
+    "database": "Convex (real-time DB, mutations, queries, vector search)",
+    "ai": "Anthropic Claude (patch generation, live SOP test), OpenAI text-embedding-3-small (embeddings)",
+    "auth": "Clerk (org-based, three roles: vendor_admin, vendor_fde, customer_user)",
+    "graph": "Graphiti + Kuzu (embedded graph DB) with 19 entity types and 21 edge types"
+  },
+  "designSystem": {
+    "aesthetic": "Dark editorial sophistication — serif headlines, monospace labels, sage green accents on deep black.",
+    "colors": {
+      "background": "#0A0A0A",
+      "surface": "#181818",
+      "elevated": "#121212",
+      "border": "#242424",
+      "primary": "#9CA896",
+      "amber": "#D8B87C",
+      "blue": "#7CA8D8",
+      "red": "#D87C7C",
+      "text": "#E8E8E8",
+      "textSecondary": "#A0A0A0",
+      "textMuted": "#707070"
+    },
+    "typography": {
+      "headings": "Playfair Display (serif)",
+      "body": "Satoshi (already in src/fonts/)",
+      "labels": "IBM Plex Mono (uppercase, 0.75rem, tracking-widest)"
+    }
+  },
+  "demoScenario": {
+    "agent": "deal_qualification_agent",
+    "deal": "DQ-2024-0311-004",
+    "failure": "Two co-signatories (Meridian Capital Group LLC + Meridian Capital Advisors Inc.) not covered by SOP Rule 3.2",
+    "governance": "G-006 requires explicit multi-entity SOP coverage",
+    "escalation": "ESC-2024-0311-017",
+    "patch": "Rule 3.2.1 added; SOP versions v2.1 → v2.2"
+  },
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Confirm and add missing entity types to sidecar",
+      "description": "As a backend developer, I need to verify that entity_types.py has SOPEntity, GovernanceRuleEntity, and AgentSignalEntity, and add any that are missing, so the knowledge graph can classify demo documents correctly.",
+      "acceptanceCriteria": [
+        "Check adela-graphiti-sidecar/app/models/entity_types.py for SOPEntity or equivalent",
+        "Check for GovernanceRuleEntity or equivalent",
+        "Check for AgentSignalEntity or equivalent",
+        "Add any missing types as Pydantic models following existing pattern",
+        "Add new types to the ENTITY_TYPES dict",
+        "Typecheck/lint passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Do NOT create new infrastructure. Just add Pydantic models to the existing file if missing. Follow the pattern of existing entity types."
+    },
+    {
+      "id": "US-002",
+      "title": "Add typed document ingestion endpoint to sidecar",
+      "description": "As a backend developer, I need a POST /ingest/document endpoint that accepts governance, sop, and agent_log document types and ingests them into the Graphiti knowledge graph.",
+      "acceptanceCriteria": [
+        "POST /ingest/document endpoint exists in adela-graphiti-sidecar",
+        "Accepts JSON body with agent_id, document_type (governance|sop|agent_log), content (markdown text), source_name, optional metadata",
+        "Calls graphiti.add_episode() with ENTITY_TYPES and EDGE_TYPES",
+        "Episode name uses format: {document_type}:{source_name}",
+        "Returns JSON with episode_id, entities_extracted, edges_extracted, status (ok|error), optional error message",
+        "Does not throw on valid markdown input",
+        "Typecheck/lint passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "Add to existing router or create ingest_demo.py in adela-graphiti-sidecar/app/routers/. The three demo documents: governance_rules.md (governance), deal_qualification_sop_v2.1.md (sop), Agent_Log_Mar_11_2024.md (agent_log)."
+    },
+    {
+      "id": "US-003",
+      "title": "Add gap detection endpoint to sidecar",
+      "description": "As a backend developer, I need a POST /gaps/detect endpoint that uses the knowledge graph to identify SOP gaps from agent signals.",
+      "acceptanceCriteria": [
+        "POST /gaps/detect endpoint exists",
+        "Accepts JSON with agent_id and signal object (triggered_rule, conflict_description, governance_ref, escalation_id, deal_id)",
+        "Constructs search query from signal fields and calls Graphiti hybrid search",
+        "Returns gap_detected (bool), gap_summary, affected_sop_rule, governing_rule_violated, confidence (0.0-1.0), relevant_graph_nodes array, suggested_patch_text",
+        "gap_detected=true for the Meridian scenario when all three demo docs are ingested",
+        "confidence >= 0.75 for the demo scenario",
+        "Returns gap_detected=false with confidence=0 when graph is empty",
+        "Typecheck/lint passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "Confidence = ratio of expected nodes found (3/3 = 1.0). suggested_patch_text is prose synthesized from graph context, not a Claude API call. Keep deterministic for demo reliability."
+    },
+    {
+      "id": "US-004",
+      "title": "Add patch proposal endpoint to sidecar",
+      "description": "As a backend developer, I need a POST /patches/propose endpoint that generates a governed SOP patch with traceability from gap detection results.",
+      "acceptanceCriteria": [
+        "POST /patches/propose endpoint exists",
+        "Accepts JSON with agent_id, sop_id, gap_detection_result (full response from /gaps/detect)",
+        "Calls Claude API (claude-sonnet-4-20250514) to generate patch_text",
+        "Has hardcoded FALLBACK_PATCH for Rule 3.2.1 Multi-Entity Approval Routing used if Claude API fails (try/catch confirmed)",
+        "Returns patch_id (uuid), patch_text, patch_rule_id (3.2.1), patch_location, confidence, diff (before/after), traceability object, status (staged)",
+        "Traceability block contains all three source documents",
+        "diff.before contains original Rule 3.2 text, diff.after contains Rule 3.2 + Rule 3.2.1",
+        "status is 'staged' for confidence >= 0.75",
+        "Typecheck/lint passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "Store patch in-memory (dict keyed by patch_id). No new Convex table needed. Convex SOP versioning handles the canonical record."
+    },
+    {
+      "id": "US-005",
+      "title": "Add patch approve/reject endpoints to sidecar",
+      "description": "As a backend developer, I need POST /patches/{patch_id}/approve and /patches/{patch_id}/reject endpoints to handle patch decisions.",
+      "acceptanceCriteria": [
+        "POST /patches/{patch_id}/approve endpoint exists",
+        "Approve accepts JSON with agent_id, sop_id, approved_by",
+        "Approve returns status='approved', new_sop_version='v2.2', previous_version='v2.1', patch_id, approved_at (ISO timestamp)",
+        "POST /patches/{patch_id}/reject endpoint exists",
+        "Reject returns status='rejected', patch_id",
+        "Typecheck/lint passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "On approve: return approval metadata only. The frontend handles Convex SOP versioning. On reject: mark patch as rejected in-memory."
+    },
+    {
+      "id": "US-006",
+      "title": "Add demo state aggregation endpoint to sidecar",
+      "description": "As a backend developer, I need a GET /demo/state endpoint that returns the full current demo state (ingested docs, graph nodes/edges, gap, patch) in one call for the frontend to consume.",
+      "acceptanceCriteria": [
+        "GET /demo/state?agent_id={agent_id} endpoint exists",
+        "Returns documents_ingested array (source_name, document_type, entity_count, ingested_at)",
+        "Returns graph_node_count, graph_edge_count",
+        "Returns latest_gap (null if no gap detected yet)",
+        "Returns latest_patch (null if no patch proposed yet)",
+        "Returns graph_nodes array (node_id, entity_type, name, summary, source_document) sufficient for d3-force rendering",
+        "Returns graph_edges array (source_id, target_id, relationship_type, fact) sufficient for d3-force rendering",
+        "Responds in < 2 seconds",
+        "Typecheck/lint passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": "This is the 'god endpoint' the frontend polls for all demo state. Aggregates in-memory data from ingestion, gap detection, and patch proposal steps."
+    },
+    {
+      "id": "US-007",
+      "title": "Fix Graphiti sidecar connection in KG tab",
+      "description": "As a frontend developer, I need to fix the 'fetch failed' error in the Knowledge Graph tab so it correctly connects to the Graphiti sidecar.",
+      "acceptanceCriteria": [
+        "KG tab no longer shows 'fetch failed' when sidecar is running on localhost:8000",
+        "Loading spinner shown during fetch",
+        "Graceful offline state if sidecar is down: 'Knowledge graph offline' with subtle reconnect indicator (not broken-looking)",
+        "Typecheck/lint passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": "Update src/lib/graphiti-client.ts and the KG tab component. Confirm sidecar URL (likely http://localhost:8000). Replace whatever hardcoded URL or env var is failing."
+    },
+    {
+      "id": "US-008",
+      "title": "Build three-panel Knowledge Graph UI — graph canvas",
+      "description": "As a user, I want to see a d3-force graph visualization of knowledge graph nodes and edges so I can explore entity relationships.",
+      "acceptanceCriteria": [
+        "Three-panel layout: graph canvas (60%), node detail (20%), signal feed (20%)",
+        "d3-force graph renders nodes and edges from GET /demo/state endpoint data",
+        "Node colors by entity type: SOP=#9CA896 (sage), GovernanceRule=#7CA8D8 (blue), AgentSignal=#D8B87C (amber), other=#505050 (muted)",
+        "Node sizes: degree-based sizing (min 6px radius, max 16px)",
+        "Hover node shows tooltip with entity name + type label in IBM Plex Mono uppercase",
+        "New node pulse animation: scale 1→1.3→1, 600ms when first appearing after ingestion",
+        "Layout stable on 1280px+ viewport",
+        "Typecheck/lint passes"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": "d3-force is already installed (@types/d3-force in devDependencies). Fetch from GET /demo/state. Panel 2 and 3 are separate stories."
+    },
+    {
+      "id": "US-009",
+      "title": "Build KG node detail panel and signal feed panel",
+      "description": "As a user, I want to click a graph node to see its details, and see a real-time signal feed of ingestion events.",
+      "acceptanceCriteria": [
+        "Click node in graph canvas populates Panel 2 (node detail) with: entity type badge, entity name, summary, source document, connected nodes list",
+        "Panel 2 empty state: 'Select a node to inspect' in muted text",
+        "Panel 3 (signal feed) shows live feed of ingestion events and gap detection signals",
+        "Each signal card: rounded-[4px] border-l-2 bg-[#181818] p-3, border color matches entity type color",
+        "Signal feed updates via polling (every 3s) or Convex real-time subscription",
+        "Typecheck/lint passes"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": "Panel 2 data comes from node click. Panel 3 data comes from Convex agentDocuments or containerRuns table, or from /demo/state polling."
+    },
+    {
+      "id": "US-010",
+      "title": "Documents tab — type selector and sidecar upload",
+      "description": "As a user, I want to upload documents with a type selector (governance/sop/agent_log) and see them ingested into the knowledge graph with entity counts.",
+      "acceptanceCriteria": [
+        "Document type selector before upload: dropdown or segmented control with options governance | sop | agent_log",
+        "Upload reads file as text and calls POST /ingest/document on the sidecar",
+        "On success: document card appears with type badge and entity count from response",
+        "Badge colors: governance=#7CA8D8 at 15% opacity, sop=#9CA896 at 15% opacity, agent_log=#D8B87C at 15% opacity",
+        "On error: red toast 'Ingestion failed — [error message]'",
+        "Typecheck/lint passes"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": "Current state: upload area + 'No documents uploaded yet' empty state. Add type selector and wire upload to sidecar instead of (or in addition to) existing Convex upload."
+    },
+    {
+      "id": "US-011",
+      "title": "SOPs tab — active and staged SOP cards",
+      "description": "As a user, I want to see active SOPs and staged patches in the SOPs tab so I can review and approve SOP changes.",
+      "acceptanceCriteria": [
+        "SOPs tab shows two sections: Active and Staged",
+        "Active SOP card shows: [ACTIVE] badge (sage green), version (v2.1), title, last updated, rule count, arrow link",
+        "Staged SOP card appears after patch proposal: [STAGED] badge (amber), [PENDING APPROVAL] badge, version (v2.2 draft), proposed change count, trigger escalation ID",
+        "Staged card has [Reject] and [Review & Approve →] buttons",
+        "'Review & Approve →' navigates to /dashboard/[agentId]/patch/[sopId]",
+        "After approval, card updates from staged to [ACTIVE] v2.2",
+        "Data sourced from Convex sops and sopVersions tables",
+        "Typecheck/lint passes"
+      ],
+      "priority": 11,
+      "passes": true,
+      "notes": "Current state: 'No SOPs for this agent yet.' empty state. On approve from diff page: Convex mutation archives current version, creates new active sopVersions record with v2.2 content."
+    },
+    {
+      "id": "US-012",
+      "title": "SOP Diff page — left panel with GitHub-style diff renderer",
+      "description": "As a user, I want to see the proposed SOP patch as a GitHub-style red/green diff so I can review exactly what changes.",
+      "acceptanceCriteria": [
+        "Route: /dashboard/[agentId]/patch/[sopId] exists",
+        "Two-column layout: SOP diff (left, 55%) and traceability (right, 45%)",
+        "Diff renders with: removed lines bg-[#2d1515] border-l-4 border-[#D87C7C] text-[#D87C7C], added lines bg-[#152d1a] border-l-4 border-[#9CA896] text-[#9CA896], context lines bg-[#181818] text-[#707070]",
+        "Line numbers in IBM Plex Mono, muted",
+        "Version labels below diff: CURRENT v2.1 → PROPOSED v2.2",
+        "Approve and Reject buttons below version labels, monospace uppercase full-width",
+        "Typecheck/lint passes"
+      ],
+      "priority": 12,
+      "passes": true,
+      "notes": "Diff data comes from patch proposal response (diff.before / diff.after). Traceability panel is a separate story."
+    },
+    {
+      "id": "US-013",
+      "title": "SOP Diff page — traceability panel with accordion panels",
+      "description": "As a user, I want to see why a patch was proposed via three traceability accordion panels (Agent Signal, Governance Rule, SOP Gap) with expand-to-source capability.",
+      "acceptanceCriteria": [
+        "Right panel header: 'WHY THIS PATCH?' in IBM Plex Mono uppercase",
+        "Three accordion panels all expanded by default: Agent Signal (RULE_CONFLICT), Governance Rule (G-006), SOP Gap (Rule 3.2)",
+        "Each panel shows structured metadata matching the demo scenario data",
+        "'Expand to source' toggle on each panel shows raw source text excerpt in bg-[#0F0F0F] font-mono text-sm text-[#A0A0A0] p-4 rounded-[4px]",
+        "Traceability data sourced from patch proposal response traceability object",
+        "Typecheck/lint passes"
+      ],
+      "priority": 13,
+      "passes": true,
+      "notes": "All three panels must show correct data for the Meridian demo scenario. Agent Signal panel shows escalation_id, deal_id, entities, timestamp. Governance panel shows rule_id, enforcement, requirement. SOP Gap panel shows current_rule, gap description, patch."
+    },
+    {
+      "id": "US-014",
+      "title": "SOP Diff page — approve/reject actions with Convex versioning",
+      "description": "As a user, I want to approve or reject a patch from the diff page, with approve creating a new SOP version in Convex.",
+      "acceptanceCriteria": [
+        "Approve button calls POST /patches/{patch_id}/approve on sidecar",
+        "On approve success: Convex mutation archives current active version, creates new sopVersions record with v2.2 content",
+        "Success state: sage green banner 'Patch approved. SOP updated to v2.2.'",
+        "Navigates back to SOPs tab after 2 seconds",
+        "Reject button calls POST /patches/{patch_id}/reject on sidecar",
+        "On reject: brief 'Patch rejected.' message, navigates back to SOPs tab",
+        "Typecheck/lint passes"
+      ],
+      "priority": 14,
+      "passes": true,
+      "notes": "Convex mutations needed: mark current sop as archived/deprecated, create new sopVersions record. Use existing sops and sopVersions tables from schema."
+    },
+    {
+      "id": "US-015",
+      "title": "Live SOP Test page — side-by-side Adela vs Claude MD comparison",
+      "description": "As a user, I want to run a scenario through both Adela and raw Claude Memory/MD side-by-side to see why Adela is better for traceability.",
+      "acceptanceCriteria": [
+        "Route: /dashboard/[agentId]/sop-test exists",
+        "Scenario textarea pre-filled with Meridian co-signatory scenario text",
+        "'Run Test' button triggers two Claude API calls simultaneously",
+        "Left panel (Adela): system prompt instructs structured governed SOP response with citations and version tracking",
+        "Right panel (Claude MD): system prompt is generic helpful assistant with pasted SOP markdown",
+        "Loading states shown while calls are in flight",
+        "Capability comparison chips below each panel: gap detection (✓/✗), governance referenced (✓/✗), patch proposed (✓/✗), audit trail (✓/✗)",
+        "Hardcoded fallback responses used if Claude API calls fail (try/catch for both)",
+        "Typecheck/lint passes"
+      ],
+      "priority": 15,
+      "passes": true,
+      "notes": "Claude calls made from API route (not client-side). Left panel uses structured Adela system prompt. Right panel uses generic assistant prompt. Fallback text defined in PRD Section 6.2."
+    },
+    {
+      "id": "US-016",
+      "title": "Benchmark page — static 9/10 vs 4/10 comparison",
+      "description": "As a user, I want to see a static benchmark page comparing Adela (9/10) vs Claude Memory/MD (4/10) on traceability-dependent scenarios.",
+      "acceptanceCriteria": [
+        "Route: /dashboard/benchmark exists",
+        "Page is fully static — no API calls, no loading states",
+        "Two large score cards: Adela 9/10 (sage green accent) and Claude MD 4/10 (muted/gray)",
+        "Progress bars: Adela 90% filled, Claude MD 40% filled",
+        "Table of 10 scenarios with: scenario description, Adela result (✓ sage/✗ red), Claude MD result (✓/✗), failure chips",
+        "Failure chips: MULTI-SIGNAL, GOVERNANCE-DEPENDENT, VERSION-AWARENESS, GRAPH-TRAVERSAL in colored monospace badges",
+        "Alternating row background: #181818 / #121212",
+        "Navigable from sidebar or top nav (add 'Benchmark' link)",
+        "Typecheck/lint passes"
+      ],
+      "priority": 16,
+      "passes": true,
+      "notes": "All data is hardcoded. 10 scenarios exactly as defined in PRD Section 7. Score: Adela passes scenarios 1-10 except one partial (9/10). Claude MD passes scenarios 5, 9 and two partials (4/10)."
+    },
+    {
+      "id": "US-017",
+      "title": "Add demo navigation links to dashboard sidebar",
+      "description": "As a user, I want to navigate to the new demo pages (Benchmark, Live SOP Test) from the dashboard sidebar/nav.",
+      "acceptanceCriteria": [
+        "Benchmark link added to dashboard sidebar or navigation",
+        "Live SOP Test link added (if not already accessible from SOPs tab)",
+        "Links navigate correctly to /dashboard/benchmark and /dashboard/[agentId]/sop-test",
+        "Active state styling matches existing nav pattern",
+        "Typecheck/lint passes"
+      ],
+      "priority": 17,
+      "passes": true,
+      "notes": "Check existing dashboard layout.tsx for nav pattern. Add links following existing sidebar component structure."
+    }
+  ],
+  "constraints": {
+    "scope": [
+      "No breaking changes to existing routes — current dashboard shell with four tabs must continue to work",
+      "Hardcoded fallbacks required on all Claude API calls (Live SOP Test, Patch Proposal)",
+      "Demo data is fixed — do not change scenario (deal ID, entity names, escalation ID, SOP rule numbers)",
+      "No new Graphiti infrastructure — use existing ENTITY_TYPES and EDGE_TYPES dicts",
+      "No new Convex tables — use existing sops, sopVersions, agentDocuments, containerRuns",
+      "Sidecar state is in-memory for the demo — patch proposals and gap detection results don't need Convex persistence"
+    ],
+    "performance": {
+      "allEndpoints": "< 2 seconds response time in happy path",
+      "pageLoad": "< 2 seconds on broadband",
+      "graphRendering": "Stable on 1280px+ viewport"
+    }
+  },
+  "security": {
+    "auth": "Clerk handles all auth. Sidecar endpoints are internal-only (no Clerk auth needed on sidecar).",
+    "secrets": "ANTHROPIC_API_KEY for Claude calls in Live SOP Test and patch generation. All server-side only."
+  },
+  "nonGoals": [
+    "Persistent sidecar state across restarts",
+    "Production-grade Graphiti performance tuning",
+    "Mobile responsive design for demo pages",
+    "Automated testing of demo flow",
+    "Multi-agent demo scenarios"
+  ]
+}

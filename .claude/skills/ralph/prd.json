@@ -1,0 +1,332 @@
+
+{
+  "project": "Adela",
+  "branchName": "forward-ai/v1-escalation-agent",
+  "description": "Adela v1 — Client-facing escalation & Q&A agent for FDE teams. Standalone web app where enterprise customers get documentation-grounded Q&A and structured escalation with rich context capture. Vendor FDE teams get a real-time escalation dashboard, resolution library, and per-account health view. Slack integration for automatic issue detection. Built with Next.js/React (TS) frontend on Vercel, Node.js (TS) backend, Python agent services on AWS ECS, Convex for data/realtime/vector search, OpenAI GPT-4.1 for classification and Q&A, Clerk for auth. Multi-tenant: vendor = tenant, customer account = sub-tenant. Day-one value scope only — no autonomous resolution in v1.",
+  "techStack": {
+    "frontend": "Next.js 14+ / React (TypeScript), deployed on Vercel",
+    "backend": "Node.js (TypeScript) for core services",
+    "agents": "Python 3.11+ for AI agent orchestration (classifier, Q&A, context builder, doc ingestion)",
+    "database": "Convex (structured data, real-time subscriptions, vector search)",
+    "ai": "OpenAI GPT-4.1 for classification/Q&A/reasoning, text-embedding-3-small (1536d) for embeddings",
+    "auth": "Clerk (orgs map to vendor tenants, invite-link onboarding for customers)",
+    "infrastructure": "AWS ECS/Lambda for Python services, Vercel for frontend, GitHub Actions CI/CD",
+    "integrations": "Slack (OAuth, webhook ingestion, bot messaging)"
+  },
+  "designSystem": {
+    "aesthetic": "Dark editorial sophistication — serif headlines, monospace labels, sage green accents on deep black. Calm, information-dense, trustworthy.",
+    "colors": {
+      "primary": "#9CA896",
+      "background": "#0A0A0A",
+      "surface": "#181818",
+      "text": "#E8E8E8",
+      "textSecondary": "#A0A0A0",
+      "border": "#242424",
+      "severityCritical": "#D87C7C",
+      "severityWarning": "#D8B87C",
+      "statusResolved": "#8DB88A"
+    },
+    "typography": {
+      "headings": "Playfair Display (serif)",
+      "body": "Inter",
+      "labels": "IBM Plex Mono (uppercase, 0.1em letter-spacing)"
+    }
+  },
+  "multiTenancy": {
+    "model": "Vendor as tenant (Clerk Org), customer accounts as sub-tenants within vendor. Resolution procedures scoped to vendor level for cross-account pattern recognition.",
+    "roles": [
+      "vendor_admin",
+      "vendor_fde",
+      "customer_user"
+    ],
+    "isolation": "Every Convex query filters by vendorId (vendor users) or accountId (customer users). No cross-vendor or cross-account data access."
+  },
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Vendor sign-up and org creation",
+      "description": "As a vendor admin, I want to create a Adela account so I can start onboarding my team and customers.",
+      "acceptanceCriteria": [
+        "Clerk-powered sign-up flow (email + password)",
+        "Org name and company URL collected",
+        "Vendor record created in Convex with clerkOrgId, name, slug",
+        "Redirects to onboarding wizard on completion",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Clerk Organizations map 1:1 to vendor tenants."
+    },
+    {
+      "id": "US-002",
+      "title": "Slack workspace integration",
+      "description": "As a vendor admin, I want to connect my Slack workspace and select channels to monitor so Adela can detect customer issues automatically.",
+      "acceptanceCriteria": [
+        "OAuth flow connects Slack workspace, stores bot token encrypted in Convex",
+        "Admin sees list of all workspace channels and can select/deselect which to monitor",
+        "Selected channels associated with correct customer account",
+        "Slack bot added to selected channels and begins receiving events",
+        "Webhook signature verification using SLACK_SIGNING_SECRET on every request",
+        "Minimal OAuth scopes requested (channels:history, channels:read, chat:write)",
+        "Integration status shown on dashboard (connected/disconnected)",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "Slack webhook handler should normalize messages into a generic IncomingSignal format to future-proof for additional channels (email, Jira, etc)."
+    },
+    {
+      "id": "US-003",
+      "title": "Documentation ingestion and indexing",
+      "description": "As a vendor admin, I want to upload product documentation so the Q&A agent can answer customer questions from day one.",
+      "acceptanceCriteria": [
+        "Admin can upload markdown and PDF files",
+        "Files chunked into passages, embedded with OpenAI text-embedding-3-small (1536d)",
+        "Chunks stored in Convex document_chunks table with vector index filtered by vendorId",
+        "Progress indicator shows processing status",
+        "Admin sees count of indexed documents/chunks after processing",
+        "Uploading additional docs appends to existing index, no overwrites",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "This seeds the Q&A agent — quality of chunking directly affects answer quality. v1 requires manual re-upload when docs change."
+    },
+    {
+      "id": "US-004",
+      "title": "Customer account creation and invite flow",
+      "description": "As a vendor admin, I want to create customer accounts and generate invite links so enterprise users can onboard themselves.",
+      "acceptanceCriteria": [
+        "Admin creates account with: company name, primary contact email, associated Slack channels",
+        "Unique invite code generated per account",
+        "Invite link can be copied and shared with customer",
+        "Customer signs up via invite link → Clerk auth → auto-associated with correct vendor + account",
+        "Customer user gets role 'customer_user' with accountId set",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Customer Q&A — ask a question",
+      "description": "As an enterprise customer user, I want to ask questions about my vendor's product and get immediate documentation-grounded answers.",
+      "acceptanceCriteria": [
+        "Chat interface with conversation history (persisted per user via Convex)",
+        "Text input with 'Ask anything about [Vendor Product]...' placeholder",
+        "On submit: typing indicator shown, question sent to Python Q&A service",
+        "Semantic search against vendor doc vector index, retrieves top-k chunks",
+        "GPT-4.1 generates grounded answer with source citations (doc title + section)",
+        "If confidence below threshold (default 0.6): auto-escalates and informs customer",
+        "Response time < 5 seconds for documentation-grounded answers",
+        "Fallback: if Python service unavailable, message queued, customer told team will follow up",
+        "Test with 10 sample questions — accuracy > 80% for questions with clear doc answers",
+        "Verify in browser using dev-browser skill",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "Q&A agent system prompt must only answer from provided documentation, refuse general questions, cite sources. Rate limit: 20 questions/hour per customer user. Sanitize inputs for prompt injection."
+    },
+    {
+      "id": "US-006",
+      "title": "Slack issue detection and classification",
+      "description": "As a vendor FDE, I want Adela to automatically detect issues from customer Slack channels so I don't have to manually monitor every channel.",
+      "acceptanceCriteria": [
+        "Messages in monitored channels received via Slack webhook → Node.js handler",
+        "Handler normalizes to IncomingSignal format, forwards to Python classifier",
+        "GPT-4.1 classifies: is this an issue? If yes → title, description, severity, category",
+        "Non-issue messages ignored (no Issue record created)",
+        "Issue record created in Convex with classification and Slack context attached",
+        "Classification completes within 3 seconds",
+        "Test with 20 sample messages (10 issues, 10 non-issues) — precision > 85%, recall > 75%",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": "For high-volume channels (100+ messages/day), may need secondary filter or batching — validate with design partners."
+    },
+    {
+      "id": "US-007",
+      "title": "Structured escalation with context package",
+      "description": "As a vendor FDE, I want escalations to arrive with a full context package so I can start investigating immediately.",
+      "acceptanceCriteria": [
+        "On escalation trigger: Python context builder assembles summary, classification, reproduction context, related Slack messages, related prior issues, suggested investigation path",
+        "GPT-4.1 generates structured markdown summary",
+        "Escalation record created in Convex with full contextPackage object",
+        "Real-time notification to vendor dashboard via Convex subscription",
+        "Optional notification to vendor Slack channel",
+        "Escalation creation completes within 5 seconds of trigger",
+        "Verify in browser using dev-browser skill",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": "Primary day-one value prop. Invest disproportionate effort in context builder prompt engineering. If context packages are low-quality, the product fails."
+    },
+    {
+      "id": "US-008",
+      "title": "Vendor dashboard — real-time escalation feed",
+      "description": "As a vendor FDE lead, I want a real-time feed of all open escalations across accounts so I can triage and assign work.",
+      "acceptanceCriteria": [
+        "Dashboard shows all open escalations sorted by recency (default)",
+        "Each card: account name, issue title, semantic classification, severity badge, context preview, time-since indicator",
+        "Filters: by account, severity, status, date range",
+        "Sort options: recency, severity",
+        "Cards update in real-time via Convex subscription — no page refresh",
+        "'View Full Context' expands inline or opens detail view",
+        "Empty state: 'No open escalations — your agent is handling it.'",
+        "Verify in browser using dev-browser skill",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Escalation resolution and procedure recording",
+      "description": "As a vendor FDE, I want to mark an escalation as resolved and record the resolution steps so the team can reference them later.",
+      "acceptanceCriteria": [
+        "'Mark Resolved' button prompts for resolution notes (free text, markdown supported)",
+        "On submit: escalation status → resolved, linked issue status → resolved",
+        "resolution_procedure record auto-created with: title (auto-suggested from classification), steps, source escalation/issue, affected account",
+        "Procedure embedding generated and stored for semantic matching in v2",
+        "Resolution appears in Resolution Library",
+        "Customer sees updated issue status in their portal",
+        "Thumbs up/down quality rating on escalation for training signal",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": "Open question: free text only vs optional structured fields (root cause, fix steps, affected component). Free text faster to ship but harder to match in v2."
+    },
+    {
+      "id": "US-010",
+      "title": "Resolution library — read-only view",
+      "description": "As a vendor FDE, I want to browse all recorded resolution procedures so I can check if a similar issue has been solved before.",
+      "acceptanceCriteria": [
+        "Library page lists all resolution procedures for the vendor",
+        "Each entry: title, category, steps (truncated), accounts affected count, date created",
+        "Full-text search across titles and steps",
+        "Click entry → full resolution details",
+        "Empty state: 'Resolutions will appear here as your team resolves escalated issues.'",
+        "Verify in browser using dev-browser skill",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": "Read-only in v1. No editing or approval workflows. Sets the stage for autonomous resolution in v2."
+    },
+    {
+      "id": "US-011",
+      "title": "Account health view",
+      "description": "As a vendor FDE lead, I want to see per-account health metrics so I can identify which customers need the most attention.",
+      "acceptanceCriteria": [
+        "Accounts page lists all customer accounts: name, total issues, open escalations, avg resolution time, last activity",
+        "Click through → account detail with issue history, escalation history, Slack activity summary",
+        "Sortable by open escalations count and last activity",
+        "Empty state: 'Add your first customer account to get started.'",
+        "Verify in browser using dev-browser skill",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "title": "Customer issue list and detail view",
+      "description": "As an enterprise customer user, I want to see all my reported issues and their current status.",
+      "acceptanceCriteria": [
+        "Issues page shows all issues for customer's account",
+        "Each card: title, severity badge, status, timestamp, short description",
+        "Click through → issue detail with activity timeline",
+        "Resolved issues show resolution notes",
+        "Empty state: 'No issues yet — that's a good sign.'",
+        "Verify in browser using dev-browser skill",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": true,
+      "notes": ""
+    }
+  ],
+  "constraints": {
+    "scope": [
+      "Day-one value only — no autonomous L1 resolution in v1",
+      "Resolution recording, not replay — library is read-only reference for humans",
+      "No vendor product instrumentation — issue detection from Slack and customer Q&A only",
+      "Slack only — no GitHub, Linear, Jira, or CRM integration",
+      "Web only — no mobile app",
+      "English only"
+    ],
+    "performance": {
+      "pageLoad": "< 2 seconds on broadband",
+      "qaResponse": "< 5 seconds end-to-end",
+      "issueClassification": "< 3 seconds from Slack message receipt",
+      "escalationCreation": "< 5 seconds from trigger",
+      "realtimeLatency": "< 500ms for Convex subscription updates",
+      "vectorSearch": "< 1 second for top-10 results"
+    },
+    "resources": {
+      "timeline": "4–6 weeks to MVP",
+      "teamSize": "1 (solo founder)",
+      "openAiBudget": "$500/month cap for first 3 design partners",
+      "infrastructure": "Vercel Pro, Convex Pro, AWS minimal (1–2 ECS tasks), Clerk Starter/Pro"
+    },
+    "aiLlm": [
+      "Graceful degradation if AI service unavailable",
+      "Cache embeddings for identical documents and common Q&A pairs",
+      "Respect OpenAI tier-based rate limits; implement queuing if needed"
+    ]
+  },
+  "security": {
+    "auth": "Clerk handles all auth. Clerk Organizations map 1:1 to vendor tenants. Customer invite-link onboarding scoped to specific account.",
+    "secrets": "OPENAI_API_KEY, SLACK_BOT_TOKEN (per-vendor encrypted), SLACK_SIGNING_SECRET, CLERK_SECRET_KEY, CONVEX_DEPLOY_KEY — all server-side only, never in git.",
+    "rateLimiting": {
+      "qaInterface": "20 questions/hour per customer user",
+      "slackIngestion": "100 messages/minute per vendor",
+      "vendorDashboard": "100 reads/min, 20 writes/min per user"
+    },
+    "rowLevelSecurity": "Every query filters by vendorId or accountId. No cross-vendor or cross-account query paths.",
+    "aiSecurity": [
+      "System prompt restricts Q&A agent to only answer from provided documentation",
+      "Output validation for hallucination — low grounding scores not surfaced",
+      "Daily spend monitoring with alert at 2x average, hard kill switch at monthly cap",
+      "Zero data retention requested from OpenAI",
+      "Input sanitization for prompt injection"
+    ]
+  },
+  "nonGoals": [
+    "Autonomous L1 resolution (v2)",
+    "Cross-account automated pattern detection (v2)",
+    "GitHub/Linear/Jira/CRM integrations",
+    "Vendor product instrumentation",
+    "Mobile app",
+    "Custom branding / white-labeling",
+    "Multi-language support",
+    "Billing/metering infrastructure",
+    "General-purpose FDE ops dashboarding",
+    "Resolution procedure editing/approval workflows"
+  ],
+  "successMetrics": {
+    "designPartners": "2–3 vendors onboarded within 4 weeks of launch",
+    "qaDeflectionRate": "> 40% of customer questions resolved without escalation in month 1",
+    "escalationQuality": "> 80% of escalations rated 'useful' by FDEs",
+    "timeToInvestigate": "< 15 min context gathering per escalation (vs 30–60 min baseline)",
+    "issueDetectionPrecision": "> 85% true positive rate on Slack-detected issues",
+    "resolutionLibraryGrowth": "> 20 procedures per vendor in first 2 months",
+    "uptime": "99.5% for customer-facing Q&A and vendor dashboard"
+  },
+  "openQuestions": [
+    "Confidence threshold calibration — default 0.6, needs tuning with design partners",
+    "Slack channel volume — high-volume channels may need secondary filter or batching",
+    "Resolution procedure structure — free text vs optional structured fields for v2 matching",
+    "Customer-facing agent identity — Adela branding vs vendor branding",
+    "Vendor doc freshness — v1 manual re-upload, consider webhook for hosted docs in v1.1",
+    "Escalation notification routing — per-FDE routing by account/category likely v1.1",
+    "Data retention policy — must define before fintech design partners"
+  ]
+}
