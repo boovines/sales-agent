@@ -57,3 +57,21 @@
   - aggregate_scores is pure sync — no async needed, trivially testable without mocks
   - WEIGHT_VALUES and FIT_TIER_THRESHOLDS are module-level dicts for easy tuning
 ---
+
+## 2026-03-29 - US-004
+- Implemented full nodes.py with all 6 graph nodes: input_loader, criterion_scorer, aggregate_scorer, qualification_brief_builder, hitl_gate, resume_handler
+- input_loader: JOINs prospect_briefs + discovery_queue, parses JSON fields, loads ICP via load_icp
+- criterion_scorer: creates AsyncAnthropic client, delegates to score_all_criteria
+- aggregate_scorer: calls aggregate_scores, builds qualification_brief dict
+- qualification_brief_builder: generates why_now/suggested_outreach_angle via Claude, handles auto-disqualify (fit_tier='disqualified' → writes directly to DB, sets decision='auto_rejected'), writes pending_review briefs to DB, broadcasts SSE
+- hitl_gate: intentionally empty (interrupt_before pauses BEFORE this node)
+- resume_handler: handles approved/rejected/auto_rejected decisions, updates qualification_briefs + discovery_queue, writes icp_feedback on rejection
+- Files changed:
+  - adela_outbound/agents/qualification/nodes.py (full implementation replacing stub)
+- All 9 tests PASSED
+- **Learnings for future iterations:**
+  - state.py was already correct from US-001 — no changes needed
+  - The auto-disqualify path writes to DB inside qualification_brief_builder and sets decision='auto_rejected', then resume_handler has an elif branch that does nothing (already written)
+  - Markdown fence stripping pattern is reused from scorer.py for Claude JSON responses
+  - broadcast() from events.py is called only for pending_review briefs, not auto-rejected ones
+---

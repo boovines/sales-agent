@@ -192,7 +192,7 @@
       "id": "US-004",
       "title": "QualificationState, nodes, and LangGraph graph with MemorySaver HITL",
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "description": "Implement the complete QualificationState, all six nodes, and the LangGraph StateGraph with MemorySaver checkpointer and interrupt_before=['hitl_gate']. This is the most critical story \u2014 the HITL pattern must be exactly right.",
       "acceptanceCriteria": [
         "adela_outbound/agents/qualification/state.py \u2014 replace stub: from __future__ import annotations; from typing import TypedDict, Optional; class QualificationState(TypedDict): company_id: str; prospect_brief: dict; icp_definition: dict; criterion_scores: list; qualification_brief: Optional[dict]; decision: Optional[str]; rejection_note: Optional[str]; errors: list.",
