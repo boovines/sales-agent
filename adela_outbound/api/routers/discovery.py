@@ -106,6 +106,35 @@ async def get_pipeline_stats() -> dict:
         raise HTTPException(status_code=500, detail=f'Database error: {str(e)}')
 
 
+@router.get('/stream')
+async def stream_discovery_events(request: Request) -> StreamingResponse:
+    async def event_generator():
+        q: asyncio.Queue = asyncio.Queue()
+        discovery_events.sse_queues.append(q)
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    item = await asyncio.wait_for(q.get(), timeout=30.0)
+                    yield f"event: {item['event']}\ndata: {json.dumps(item['data'])}\n\n"
+                except asyncio.TimeoutError:
+                    yield f"event: heartbeat\ndata: {json.dumps({'ts': datetime.now(timezone.utc).isoformat()})}\n\n"
+        finally:
+            if q in discovery_events.sse_queues:
+                discovery_events.sse_queues.remove(q)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        },
+    )
+
+
 @router.get('/pipeline/{company_id}')
 async def get_company(company_id: str) -> dict:
     try:
