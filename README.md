@@ -135,3 +135,105 @@ python3 -m pytest tests/ -v
 ### Shared Contract Warning
 
 The files `adela_outbound/db/schemas.py` and `adela_outbound/db/contracts.py` are shared contracts across all four agent branches. They are owned by `feature/agent-discovery` and must never be modified on this branch. If you need schema changes, coordinate with the discovery branch first.
+
+
+# Adela Outbound — ICP Qualification Agent
+
+## What This Agent Does
+
+The Qualification Agent scores each researched company against the Adela ICP (Ideal Customer Profile) definition using Claude Sonnet. It produces a per-criterion `QualificationBrief`, then **pauses for human-in-the-loop (HITL) approval** before advancing the company through the pipeline.
+
+- Companies scoring above the disqualification threshold pause for manual review
+- Companies with `fit_tier = disqualified` (fit_score < 0.30) are auto-rejected — never auto-approved
+- Approved companies move to `status = 'qualified'` in `discovery_queue` for pickup by the Drafting Agent
+- Rejection notes feed a weekly ICP refinement loop
+
+## HITL Architecture
+
+Every qualification decision must come from Justin via the API — the graph **never** auto-approves.
+
+1. `POST /qualification/run/{company_id}` triggers the LangGraph graph
+2. The graph scores all ICP criteria, builds a qualification brief, and writes it to SQLite as `pending_review`
+3. The graph **pauses at `hitl_gate`** via LangGraph `interrupt_before`
+4. Justin reviews the brief via `GET /qualification/{company_id}/brief` or `GET /qualification/queue`
+5. `POST /qualification/approve/{company_id}` or `POST /qualification/reject/{company_id}` resumes the graph
+6. The `resume_handler` node updates `qualification_briefs` and `discovery_queue` accordingly
+
+Exception: companies with `fit_tier = disqualified` bypass the HITL gate — they are routed directly to `resume_handler` with `decision = 'auto_rejected'`.
+
+## Parallel Branch Architecture
+
+This agent is one of four built concurrently in separate repo clones:
+
+| Branch | Agent | Port |
+|---|---|---|
+| `feature/agent-discovery` | Discovery | 8000 |
+| `feature/agent-research` | Research | 8001 |
+| `feature/agent-qualification` | Qualification | 8002 |
+| `feature/agent-drafting` | Drafting | 8003 |
+
+All inter-agent communication goes through **SQLite only** — never direct Python calls between agents.
+
+**Cherry-pick requirement:** `feature/agent-discovery` US-001 must be cherry-picked into this branch before development. This provides the shared DB schemas and contracts.
+
+**Locked files (do not modify):**
+- `adela_outbound/db/schemas.py` — owned by `feature/agent-discovery`
+- `adela_outbound/db/contracts.py` — owned by `feature/agent-discovery`
+- `adela_outbound/api/main.py` — owned by `feature/agent-discovery`
+- `adela_outbound/scheduler.py` — owned by `feature/agent-discovery`
+
+## Setup
+
+```bash
+# Clone and checkout
+git clone <repo-url>
+git checkout feature/agent-qualification
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Configure environment
+cp .env.example .env
+# Edit .env and set your ANTHROPIC_API_KEY
+```
+
+## Running
+
+```bash
+# Development server (port 8002 to avoid conflict with discovery 8000 and research 8001)
+uvicorn adela_outbound.api.main:app --port 8002 --reload
+```
+
+## API Endpoints
+
+All endpoints are under the `/qualification` prefix.
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/qualification/run/{company_id}` | Trigger qualification for a researched company |
+| `POST` | `/qualification/approve/{company_id}` | Approve a paused qualification |
+| `POST` | `/qualification/reject/{company_id}` | Reject a paused qualification (note required) |
+| `GET` | `/qualification/queue` | List pending_review briefs ordered by fit_score |
+| `GET` | `/qualification/{company_id}/brief` | Get full qualification brief with criterion scores |
+| `GET` | `/qualification/icp` | Get current ICP definition |
+| `PUT` | `/qualification/icp` | Update ICP criteria (creates new version) |
+| `GET` | `/qualification/icp/suggestions` | List pending ICP refinement suggestions |
+| `POST` | `/qualification/icp/suggestions/{id}/accept` | Accept an ICP suggestion |
+| `POST` | `/qualification/icp/suggestions/{id}/reject` | Reject an ICP suggestion |
+| `GET` | `/qualification/stream` | SSE stream of qualification events |
+
+> :warning: **Rejection notes are mandatory.** `POST /reject/{company_id}` returns HTTP 422 if the `note` field is missing or empty. This is enforced at the API layer and is intentional — rejection notes feed the weekly ICP refinement loop.
+
+## Testing
+
+```bash
+# Run all tests
+python3 -m pytest tests/ -v
+
+# Run qualification-specific tests
+python3 -m pytest tests/test_qualification_scorer.py tests/test_qualification_graph.py -v
+```
+
+## Shared Contract Warning
+
+The `QualificationBrief`, `ICPCriterion`, and `ICPDefinition` contracts in `adela_outbound/db/contracts.py` are shared across all four agent branches. **Do not modify these files** — they are owned by `feature/agent-discovery` and any changes must be coordinated there first.
