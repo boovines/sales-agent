@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
@@ -16,7 +17,27 @@ from adela_outbound.agents.qualification.icp import (
     save_icp_suggestion,
 )
 
-router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+async def _register_weekly_job() -> None:
+    from adela_outbound.agents.qualification.icp import generate_icp_suggestions
+    from adela_outbound.scheduler import scheduler
+
+    scheduler.add_job(
+        generate_icp_suggestions,
+        "cron",
+        day_of_week="sun",
+        hour=20,
+        minute=0,
+        id="icp_suggestion_job",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+    logger.info("Registered weekly ICP suggestion job")
+
+
+router = APIRouter(on_startup=[_register_weekly_job])
 
 
 class ApproveRequest(BaseModel):
