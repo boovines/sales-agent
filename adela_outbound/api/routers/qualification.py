@@ -10,6 +10,11 @@ from pydantic import BaseModel, field_validator
 
 from adela_outbound.db.connection import get_db
 from adela_outbound.agents.qualification import events as qual_events
+from adela_outbound.agents.qualification.icp import (
+    load_icp,
+    save_icp_version,
+    save_icp_suggestion,
+)
 
 router = APIRouter()
 
@@ -103,6 +108,75 @@ async def get_qualification_queue(limit: int = 50) -> list:
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+
+
+@router.get('/icp')
+async def get_icp() -> dict:
+    async with get_db() as conn:
+        icp = await load_icp(conn)
+    return icp
+
+
+@router.put('/icp')
+async def update_icp(body: dict) -> dict:
+    if 'criteria' not in body or not isinstance(body['criteria'], list):
+        raise HTTPException(400, 'Body must have criteria as list')
+    for c in body['criteria']:
+        if not all(k in c for k in ['id', 'name', 'description', 'weight']):
+            raise HTTPException(400, f'Criterion missing required fields: {c}')
+    async with get_db() as conn:
+        new_version = await save_icp_version(conn, body['criteria'])
+    return {
+        'status': 'saved',
+        'version': new_version,
+        'criteria_count': len(body['criteria']),
+    }
+
+
+@router.get('/icp/suggestions')
+async def get_icp_suggestions() -> list:
+    async with get_db() as conn:
+        cursor = await conn.execute(
+            'SELECT * FROM icp_suggestions WHERE status = ? ORDER BY created_at DESC',
+            ['pending'],
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+@router.post('/icp/suggestions/{suggestion_id}/accept')
+async def accept_suggestion(suggestion_id: str) -> dict:
+    async with get_db() as conn:
+        cursor = await conn.execute(
+            'SELECT * FROM icp_suggestions WHERE id = ?', [suggestion_id]
+        )
+        row = await cursor.fetchone()
+        if not row:
+            raise HTTPException(404, 'Suggestion not found')
+        try:
+            new_criteria = json.loads(dict(row).get('suggestion_text', '[]'))
+        except Exception:
+            raise HTTPException(400, 'Could not parse suggestion as criteria JSON')
+        new_version = await save_icp_version(conn, new_criteria)
+        await conn.execute(
+            'UPDATE icp_suggestions SET status = ? WHERE id = ?',
+            ['accepted', suggestion_id],
+        )
+        await conn.commit()
+    return {'status': 'accepted', 'new_version': new_version}
+
+
+@router.post('/icp/suggestions/{suggestion_id}/reject')
+async def reject_suggestion(suggestion_id: str) -> dict:
+    async with get_db() as conn:
+        result = await conn.execute(
+            'UPDATE icp_suggestions SET status = ? WHERE id = ?',
+            ['rejected', suggestion_id],
+        )
+        await conn.commit()
+        if result.rowcount == 0:
+            raise HTTPException(404, 'Suggestion not found')
+    return {'status': 'rejected'}
 
 
 @router.get('/{company_id}/brief')
