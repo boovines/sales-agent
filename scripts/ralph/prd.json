@@ -311,7 +311,7 @@
       "id": "US-010",
       "title": "events.py SSE bus and README",
       "priority": 10,
-      "passes": false,
+      "passes": true,
       "description": "Replace events.py stub with full implementation and write project documentation.",
       "acceptanceCriteria": [
         "adela_outbound/agents/qualification/events.py \u2014 replace stub: import asyncio; sse_queues: list = []; async def broadcast(event: str, data: dict) -> None: for q in sse_queues: try: q.put_nowait({'event': event, 'data': data}); except asyncio.QueueFull: pass. Zero imports from adela_outbound.",

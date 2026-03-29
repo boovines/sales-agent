@@ -157,3 +157,17 @@
   - MemorySaver checkpointer is module-level singleton — shared across tests in same process, use unique company_ids per test
   - _make_strong_scores() helper with score=2 per criterion yields fit_tier > disqualified; _make_zero_scores() with score=0 yields fit_tier=disqualified
 ---
+
+## 2026-03-29 - US-010
+- Replaced events.py stub broadcast with full implementation (put_nowait to all sse_queues, QueueFull silenced)
+- Created .env.example with ANTHROPIC_API_KEY
+- Created README.md with full project documentation: HITL architecture, parallel branch architecture, setup, running (port 8002), all 11 API endpoints, testing, shared contract warning, mandatory rejection note callout
+- Files changed:
+  - adela_outbound/agents/qualification/events.py (broadcast implementation)
+  - .env.example (new)
+  - README.md (new)
+- All 10 tests PASSED, router import OK
+- **Learnings for future iterations:**
+  - events.py has zero imports from adela_outbound — only uses stdlib asyncio
+  - All 10 user stories now complete and passing
+---
