@@ -69,8 +69,7 @@ async def resume_qualification(
     company_id: str, decision: str, rejection_note: str = None
 ) -> dict:
     config = {'configurable': {'thread_id': company_id}}
-    resume_data = {'decision': decision, 'rejection_note': rejection_note}
-    result = await qualification_graph.ainvoke(
-        Command(resume=resume_data), config=config
-    )
+    update = {'decision': decision, 'rejection_note': rejection_note}
+    await qualification_graph.aupdate_state(config, update)
+    result = await qualification_graph.ainvoke(None, config=config)
     return result
