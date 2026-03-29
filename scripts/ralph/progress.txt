@@ -27,6 +27,8 @@
   - langgraph is already in requirements.txt from the cherry-pick
   - pytest.ini has `asyncio_mode = auto` — async tests work without decorator
   - qualification agent has NO sources/ subdirectory (unlike discovery)
+- Strip markdown fences from Claude API responses before JSON parsing (```json ... ```)
+- Use unittest.mock.AsyncMock for mocking async client methods in tests
 ---
 
 ## 2026-03-29 - US-002
@@ -40,4 +42,18 @@
   - save_icp_version uses INSERT not UPDATE — creates new version row each time for full history
   - aiosqlite.Row factory must be set on conn for dict(row) to work in load_icp
   - Test helper _make_conn(tmp_path) creates an in-memory DB with all tables — reusable for future test files
+---
+
+## 2026-03-29 - US-003
+- Implemented scorer.py with full per-criterion Claude scoring and aggregate score calculator
+- Functions: score_criterion (async, calls Claude per criterion), score_all_criteria (concurrent via asyncio.gather), aggregate_scores (sync weighted arithmetic)
+- Files changed:
+  - adela_outbound/agents/qualification/scorer.py (full implementation replacing stub)
+  - tests/test_qualification_scorer.py (4 new tests: aggregate strong/disqualified/missing + Claude failure mock)
+- All 7 tests PASSED
+- **Learnings for future iterations:**
+  - Markdown fence stripping needed for Claude API JSON responses — check for ``` prefix and strip first/last lines
+  - AsyncMock from unittest.mock works well for mocking anthropic client.messages.create
+  - aggregate_scores is pure sync — no async needed, trivially testable without mocks
+  - WEIGHT_VALUES and FIT_TIER_THRESHOLDS are module-level dicts for easy tuning
 ---

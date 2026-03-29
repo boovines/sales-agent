@@ -163,7 +163,7 @@
       "id": "US-003",
       "title": "Per-criterion Claude scorer and aggregate score calculator",
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "description": "Implement scorer.py with per-criterion Claude scoring (one call per criterion, run concurrently) and the weighted aggregate scorer that produces fit_score and fit_tier.",
       "acceptanceCriteria": [
         "adela_outbound/agents/qualification/scorer.py \u2014 replace stub with full implementation.",
