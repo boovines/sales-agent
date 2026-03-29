@@ -220,3 +220,57 @@ async def rate_limiter(state: DiscoveryState) -> dict:
         errors = list(state.get('errors', []))
         errors.append(str(e))
         return {'final_records': [], 'cap_applied': False, 'errors': errors}
+
+
+async def queue_writer(state: DiscoveryState) -> dict:
+    try:
+        INSERT_SQL = (
+            'INSERT OR IGNORE INTO discovery_queue '
+            '(id, company_name, website, twitter_handle, github_handle, linkedin_url, '
+            'discovery_source, discovery_signal, pre_score, status, created_at, updated_at) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'
+        )
+        rows = [
+            (
+                r['id'], r['company_name'], r['website'], r['twitter_handle'],
+                r['github_handle'], r['linkedin_url'], r['discovery_source'],
+                r['discovery_signal'], r['pre_score'], r['status'],
+                r['created_at'], r['updated_at'],
+            )
+            for r in state['final_records']
+        ]
+
+        async with get_db() as conn:
+            if rows:
+                await conn.executemany(INSERT_SQL, rows)
+                await conn.commit()
+
+            run_row = (
+                str(uuid.uuid4()),
+                state['run_type'],
+                json.dumps(state['sources_queried']),
+                len(state['final_records']),
+                1 if state.get('cap_applied') else 0,
+                state['started_at'],
+                datetime.now(timezone.utc).isoformat(),
+            )
+            await conn.execute(
+                'INSERT INTO discovery_runs '
+                '(id, run_type, sources_queried, results_count, cap_applied, started_at, completed_at) '
+                'VALUES (?,?,?,?,?,?,?)',
+                run_row,
+            )
+            await conn.commit()
+
+        await broadcast('discovery_update', {
+            'run_id': state['run_id'],
+            'count': len(state['final_records']),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+        })
+
+        return {'errors': state.get('errors', [])}
+    except Exception as e:
+        logger.error(f'queue_writer error: {e}')
+        errors = list(state.get('errors', []))
+        errors.append(str(e))
+        return {'errors': errors}
