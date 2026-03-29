@@ -11,3 +11,4 @@ python-dotenv
 pytest
 pytest-asyncio
 anthropic
+firecrawl-py
