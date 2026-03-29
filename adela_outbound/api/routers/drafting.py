@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Optional
 
 import aiosqlite
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from adela_outbound.config import config
@@ -253,3 +255,38 @@ async def get_outreach_log(
         }
         for row in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# SSE stream
+# ---------------------------------------------------------------------------
+
+
+@router.get("/stream/drafts")
+async def drafts_sse_stream(request: Request) -> StreamingResponse:
+    from adela_outbound.agents.drafting.events import drafting_sse_queues
+
+    queue: asyncio.Queue = asyncio.Queue()
+    drafting_sse_queues.append(queue)
+
+    async def event_generator():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event_data = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield f"event: {event_data['event']}\ndata: {json.dumps(event_data)}\n\n"
+                except asyncio.TimeoutError:
+                    yield "event: heartbeat\ndata: {}\n\n"
+        finally:
+            try:
+                drafting_sse_queues.remove(queue)
+            except ValueError:
+                pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

@@ -199,9 +199,10 @@ async def channel_router(state: DraftingState) -> DraftingState:
         name_row = await cursor.fetchone()
         company_name = dict(name_row)["company_name"] if name_row else state["company_id"]
 
-    # Emit SSE event
+    # Emit SSE event — redraft_ready when re-drafting, draft_ready otherwise
+    event_name = "redraft_ready" if redraft_feedback else "draft_ready"
     event_data = {
-        "event": "draft_ready",
+        "event": event_name,
         "company_id": state["company_id"],
         "company_name": company_name,
         "primary_channel": resolved_channel,

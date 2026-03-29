@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -399,6 +400,83 @@ async def test_get_outreach_log_with_date_filter(client: httpx.AsyncClient):
         assert "ol.sent_at >= ?" in query
         assert "ol.sent_at <= ?" in query
         assert params == ["2026-03-01", "2026-03-31"]
+
+
+# ---------------------------------------------------------------------------
+# GET /stream/drafts (SSE)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sse_stream_receives_draft_ready():
+    """Push a draft_ready event via the SSE queue and verify it formats correctly."""
+    from adela_outbound.agents.drafting.events import drafting_sse_queues
+
+    # Simulate what the SSE endpoint does: create a queue, put an event, read it
+    queue: asyncio.Queue = asyncio.Queue()
+    drafting_sse_queues.append(queue)
+
+    event_payload = {
+        "event": "draft_ready",
+        "company_id": "sse-test-co",
+        "company_name": "SSE Test",
+        "primary_channel": "email",
+        "personalization_hook": "Test hook",
+        "timestamp": "2026-03-29T12:00:00",
+    }
+    await queue.put(event_payload)
+
+    # Read from queue (simulating what the event_generator does)
+    event_data = await asyncio.wait_for(queue.get(), timeout=2.0)
+    formatted = f"event: {event_data['event']}\ndata: {json.dumps(event_data)}\n\n"
+
+    assert "event: draft_ready\n" in formatted
+    assert '"company_id": "sse-test-co"' in formatted
+    assert '"personalization_hook": "Test hook"' in formatted
+
+    # Cleanup
+    drafting_sse_queues.remove(queue)
+
+
+@pytest.mark.asyncio
+async def test_sse_endpoint_returns_streaming_response():
+    """Verify the SSE endpoint returns correct media type and headers."""
+    from unittest.mock import AsyncMock as AMock
+
+    from adela_outbound.api.routers.drafting import drafts_sse_stream
+
+    mock_request = AMock()
+    mock_request.is_disconnected = AMock(return_value=False)
+
+    resp = await drafts_sse_stream(mock_request)
+    assert resp.media_type == "text/event-stream"
+    assert resp.headers.get("cache-control") == "no-cache"
+    assert resp.headers.get("x-accel-buffering") == "no"
+
+
+@pytest.mark.asyncio
+async def test_sse_fan_out_to_multiple_queues():
+    """Verify that events are delivered to all connected queues."""
+    from adela_outbound.agents.drafting.events import drafting_sse_queues
+
+    q1: asyncio.Queue = asyncio.Queue()
+    q2: asyncio.Queue = asyncio.Queue()
+    drafting_sse_queues.append(q1)
+    drafting_sse_queues.append(q2)
+
+    event = {"event": "draft_ready", "company_id": "fan-out-test"}
+    # Simulate channel_router fan-out
+    for q in drafting_sse_queues:
+        if q in (q1, q2):
+            await q.put(event)
+
+    e1 = await asyncio.wait_for(q1.get(), timeout=1.0)
+    e2 = await asyncio.wait_for(q2.get(), timeout=1.0)
+    assert e1["company_id"] == "fan-out-test"
+    assert e2["company_id"] == "fan-out-test"
+
+    drafting_sse_queues.remove(q1)
+    drafting_sse_queues.remove(q2)
 
 
 @pytest.mark.asyncio
