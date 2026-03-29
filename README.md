@@ -73,3 +73,65 @@ pytest tests/ -v
 | `DISCOVERY_INTERVAL_HOURS` | `12` | Scheduled discovery run interval in hours |
 | `DB_PATH` | `adela.db` | Path to SQLite database file (auto-created) |
 | `DASHBOARD_TOKEN` | `dev-token` | Bearer token for dashboard API authentication |
+
+---
+
+## Adela Outbound — Prospect Research Agent
+
+### What This Agent Does
+
+The Research Agent is triggered per company from the `discovery_queue`, runs deep parallel research using Firecrawl, Perplexity, GitHub, and Grok, then synthesises a prospect brief using Claude Sonnet. It writes output to the `prospect_briefs` SQLite table for pickup by the Qualification Agent.
+
+### Parallel Branch Architecture
+
+This agent is built on the `feature/agent-research` branch — one of four agents developed concurrently in separate repo clones. All inter-agent communication goes through SQLite only (never direct Python calls).
+
+**Locked files** (owned by `feature/agent-discovery` — do not modify):
+- `adela_outbound/db/schemas.py`
+- `adela_outbound/db/contracts.py`
+
+The `feature/agent-discovery` US-001 commit must be cherry-picked before any code on this branch will import correctly.
+
+### Prerequisites
+
+1. **Python 3.9.6+**
+2. Cherry-pick the discovery agent's US-001 commit to get shared schemas:
+   ```bash
+   git fetch origin
+   git cherry-pick <US-001-commit-hash>
+   ```
+
+### Setup
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env
+# Fill in your API keys in .env
+```
+
+### Running
+
+```bash
+uvicorn adela_outbound.api.main:app --reload --port 8001
+```
+
+> **Note:** Port 8001 is used to avoid conflict with the discovery agent running on 8000 during development. In the merged service both share port 8000 under different prefixes.
+
+### API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/research/run/{company_id}` | Trigger research for a company (runs in background) |
+| GET | `/research/queue` | List queued companies ordered by pre_score |
+| GET | `/research/{company_id}/brief` | Get the completed research brief for a company |
+| GET | `/research/stream` | SSE stream of real-time research events |
+
+### Testing
+
+```bash
+python3 -m pytest tests/ -v
+```
+
+### Shared Contract Warning
+
+The files `adela_outbound/db/schemas.py` and `adela_outbound/db/contracts.py` are shared contracts across all four agent branches. They are owned by `feature/agent-discovery` and must never be modified on this branch. If you need schema changes, coordinate with the discovery branch first.
