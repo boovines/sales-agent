@@ -1,360 +1,348 @@
 {
-  "project": "Adela",
-  "branchName": "boovines/varick-demo",
-  "description": "Adela Varick Demo — End-to-end governed SOP lifecycle. Ingest documents into knowledge graph, detect SOP gaps via agent signals, propose governed patches with traceability, approve/reject with versioning. Includes KG visualization, SOP diff page, live SOP test, and benchmark page. Demo date: March 13, 2026.",
+  "architectureNotes": "This agent is one of four built concurrently in separate repo clones. All inter-agent communication goes through SQLite only \u2014 never direct Python calls between agents. This branch reads from prospect_briefs (written by feature/agent-research) and writes to qualification_briefs. adela_outbound/db/schemas.py and adela_outbound/db/contracts.py are locked and owned by feature/agent-discovery \u2014 never modify them. This is the first agent with a LangGraph HITL interrupt \u2014 every qualification decision must come from Justin via the API, never automatically. Routers must be self-contained for a single include_router() merge. No module-level side effects. Business logic in graph nodes only. Full rules are in CLAUDE.md which Ralph reads before this file on every iteration.",
+  "project": "adela-outbound",
+  "branchName": "feature/agent-qualification",
+  "description": "ICP Qualification Agent \u2014 scores each researched company against the Adela ICP definition using Claude Sonnet, produces a per-criterion QualificationBrief, then pauses via LangGraph interrupt() for Justin's approval or rejection. Rejection notes are mandatory and feed a weekly ICP refinement loop. Approved companies move to status='qualified' in discovery_queue for pickup by the Drafting Agent. This branch runs concurrently with feature/agent-discovery, feature/agent-research, and feature/agent-drafting in separate repo clones.",
+  "parallelContext": {
+    "prerequisite": "feature/agent-discovery must have completed US-001 and pushed to remote. Cherry-pick that commit before starting: git fetch origin && git cherry-pick <US-001-commit-hash>. Verify: python3 -c 'from adela_outbound.db.contracts import QualificationBrief, ICPCriterion, ICPDefinition; print(\"OK\")'",
+    "inputFrom": "Reads ProspectBrief rows from prospect_briefs table where status is implicitly available via company_id. Reads discovery_queue for company metadata. Reads icp_definition table for current ICP criteria.",
+    "outputTo": "Writes QualificationBrief rows to qualification_briefs table. Updates discovery_queue.status to 'qualified' (approved) or 'disqualified' (rejected). Writes icp_feedback rows on rejection. Writes icp_suggestions rows from weekly job.",
+    "ownedFiles": [
+      "adela_outbound/agents/qualification/__init__.py",
+      "adela_outbound/agents/qualification/state.py",
+      "adela_outbound/agents/qualification/nodes.py",
+      "adela_outbound/agents/qualification/graph.py",
+      "adela_outbound/agents/qualification/events.py",
+      "adela_outbound/agents/qualification/scorer.py",
+      "adela_outbound/agents/qualification/icp.py",
+      "adela_outbound/api/routers/qualification.py",
+      "tests/test_qualification_scorer.py",
+      "tests/test_qualification_graph.py"
+    ],
+    "doNotTouch": [
+      "adela_outbound/db/schemas.py",
+      "adela_outbound/db/contracts.py",
+      "adela_outbound/agents/discovery/",
+      "adela_outbound/agents/research/",
+      "adela_outbound/agents/drafting/",
+      "adela_outbound/api/routers/discovery.py",
+      "adela_outbound/api/routers/research.py",
+      "adela_outbound/api/routers/drafting.py",
+      "adela_outbound/api/main.py",
+      "adela_outbound/scheduler.py",
+      "dashboard/"
+    ],
+    "mainPyInstruction": "adela_outbound/api/main.py is owned by feature/agent-discovery. Do not modify it. It contains a commented placeholder for the qualification router. Leave it commented \u2014 the merge coordinator uncomments it."
+  },
   "techStack": {
-    "frontend": "Next.js 16 / React 19 (TypeScript), deployed on Vercel",
-    "backend": "Python FastAPI sidecar (adela-graphiti-sidecar/) with Graphiti + Kuzu knowledge graph",
-    "database": "Convex (real-time DB, mutations, queries, vector search)",
-    "ai": "Anthropic Claude (patch generation, live SOP test), OpenAI text-embedding-3-small (embeddings)",
-    "auth": "Clerk (org-based, three roles: vendor_admin, vendor_fde, customer_user)",
-    "graph": "Graphiti + Kuzu (embedded graph DB) with 19 entity types and 21 edge types"
+    "language": "Python 3.9.6+. Use from __future__ import annotations at top of all files using Optional[] type hints. No match/case, no X|None union syntax, no ParamSpec.",
+    "framework": "FastAPI 0.110+",
+    "agentOrchestration": "LangGraph 0.2+. StateGraph with TypedDict state. THIS AGENT USES HITL INTERRUPT \u2014 compile with MemorySaver checkpointer and interrupt_before=['hitl_gate']. Resume with Command(resume=payload).",
+    "database": "SQLite via aiosqlite. Always use get_db() from adela_outbound.db.connection.",
+    "llm": "anthropic Python SDK. AsyncAnthropic client. Model: claude-sonnet-4-20250514.",
+    "hitlPattern": "LangGraph HITL uses: (1) compile graph with checkpointer=MemorySaver() and interrupt_before=['hitl_gate']. (2) invoke with config={configurable: {thread_id: company_id}}. (3) graph pauses at hitl_gate node. (4) resume with graph.ainvoke(Command(resume=decision_payload), config={configurable: {thread_id: company_id}}). The thread_id is the company_id \u2014 each company has its own checkpoint.",
+    "confirmedMockPattern": "AsyncMock for all async mocks. httpx: MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_instance); __aexit__ = AsyncMock(return_value=False). AsyncAnthropic: patch class, set return_value to mock_client, then mock_client.messages.create = AsyncMock(return_value=mock_response)."
   },
-  "designSystem": {
-    "aesthetic": "Dark editorial sophistication — serif headlines, monospace labels, sage green accents on deep black.",
-    "colors": {
-      "background": "#0A0A0A",
-      "surface": "#181818",
-      "elevated": "#121212",
-      "border": "#242424",
-      "primary": "#9CA896",
-      "amber": "#D8B87C",
-      "blue": "#7CA8D8",
-      "red": "#D87C7C",
-      "text": "#E8E8E8",
-      "textSecondary": "#A0A0A0",
-      "textMuted": "#707070"
+  "icpSeedDefinition": {
+    "description": "These are the 8 seed ICP criteria stored in the icp_definition table on first startup. They are editable from the dashboard. The qualification agent always reads from the DB \u2014 never from hardcoded values after seeding.",
+    "criteria": [
+      {
+        "id": "services_mode",
+        "name": "Services company in infrastructure mode",
+        "description": "Has crossed from project work into infrastructure mode \u2014 deploying the same core product across 5+ enterprise clients",
+        "weight": "high"
+      },
+      {
+        "id": "regulated_clients",
+        "name": "Regulated industry clients",
+        "description": "Serves clients in financial services, healthcare, government, or other regulated verticals where per-client context governance is non-negotiable",
+        "weight": "high"
+      },
+      {
+        "id": "ai_agent_deployment",
+        "name": "AI or agent-heavy deployment",
+        "description": "Core offering involves deploying AI agents or bespoke technical work into enterprise environments",
+        "weight": "high"
+      },
+      {
+        "id": "team_size",
+        "name": "Team size 5-50",
+        "description": "Large enough to feel scaling pain, small enough to not have built internal tooling yet",
+        "weight": "medium"
+      },
+      {
+        "id": "funding_stage",
+        "name": "Pre-seed through Series B",
+        "description": "Later stage companies have budget but also internal tooling capacity. Earlier stage may not yet feel the pain.",
+        "weight": "medium"
+      },
+      {
+        "id": "fde_role_signal",
+        "name": "FDE or solutions engineer role signal",
+        "description": "Has forward deployed engineer, solutions engineer, or deployment engineer titles \u2014 explicit signal they are in the problem space",
+        "weight": "high"
+      },
+      {
+        "id": "scaling_signal",
+        "name": "Recent scaling signal",
+        "description": "Growing headcount, new funding, expanding client list \u2014 signal they are in the scaling pain window right now",
+        "weight": "medium"
+      },
+      {
+        "id": "technical_founder",
+        "name": "Technical founding team",
+        "description": "Founding team has engineering background \u2014 more likely to appreciate and evaluate infrastructure tooling seriously",
+        "weight": "low"
+      }
+    ],
+    "weightValues": {
+      "high": 3,
+      "medium": 2,
+      "low": 1
     },
-    "typography": {
-      "headings": "Playfair Display (serif)",
-      "body": "Satoshi (already in src/fonts/)",
-      "labels": "IBM Plex Mono (uppercase, 0.75rem, tracking-widest)"
-    }
-  },
-  "demoScenario": {
-    "agent": "deal_qualification_agent",
-    "deal": "DQ-2024-0311-004",
-    "failure": "Two co-signatories (Meridian Capital Group LLC + Meridian Capital Advisors Inc.) not covered by SOP Rule 3.2",
-    "governance": "G-006 requires explicit multi-entity SOP coverage",
-    "escalation": "ESC-2024-0311-017",
-    "patch": "Rule 3.2.1 added; SOP versions v2.1 → v2.2"
+    "fitTierThresholds": {
+      "strong": "fit_score >= 0.75",
+      "moderate": "fit_score >= 0.50 and < 0.75",
+      "weak": "fit_score >= 0.30 and < 0.50",
+      "disqualified": "fit_score < 0.30"
+    },
+    "autoDisqualifyRule": "Companies with fit_tier = 'disqualified' (fit_score < 0.30) are auto-rejected without entering the HITL queue. They are written directly to qualification_briefs with status='auto_rejected' and discovery_queue.status updated to 'disqualified'. Justin only reviews weak, moderate, and strong."
   },
   "userStories": [
     {
       "id": "US-001",
-      "title": "Confirm and add missing entity types to sidecar",
-      "description": "As a backend developer, I need to verify that entity_types.py has SOPEntity, GovernanceRuleEntity, and AgentSignalEntity, and add any that are missing, so the knowledge graph can classify demo documents correctly.",
-      "acceptanceCriteria": [
-        "Check adela-graphiti-sidecar/app/models/entity_types.py for SOPEntity or equivalent",
-        "Check for GovernanceRuleEntity or equivalent",
-        "Check for AgentSignalEntity or equivalent",
-        "Add any missing types as Pydantic models following existing pattern",
-        "Add new types to the ENTITY_TYPES dict",
-        "Typecheck/lint passes"
-      ],
+      "title": "Verify shared contracts, add qualification dependencies, create stub files",
       "priority": 1,
       "passes": true,
-      "notes": "Do NOT create new infrastructure. Just add Pydantic models to the existing file if missing. Follow the pattern of existing entity types."
+      "description": "Confirm shared db files from discovery cherry-pick exist, install LangGraph checkpointing dependency, create all qualification agent files as importable stubs.",
+      "acceptanceCriteria": [
+        "FIRST: python3 -c 'from adela_outbound.db.contracts import QualificationBrief, ICPCriterion, ICPDefinition; print(\"OK\")'. If this fails, the cherry-pick of discovery US-001 has not been done \u2014 stop and fix that first.",
+        "python3 -c 'from adela_outbound.db.schemas import CREATE_TABLES_SQL; assert \"qualification_briefs\" in CREATE_TABLES_SQL; assert \"icp_definition\" in CREATE_TABLES_SQL; assert \"icp_suggestions\" in CREATE_TABLES_SQL; print(\"OK\")' exits 0. All three tables must exist \u2014 they were defined in discovery US-001.",
+        "requirements.txt: confirm langgraph is present (from cherry-pick). No new packages needed beyond what discovery US-001 already added. If langgraph is missing for any reason, add it.",
+        "Create adela_outbound/agents/qualification/__init__.py \u2014 empty.",
+        "Create adela_outbound/agents/qualification/sources/__init__.py \u2014 empty. Wait \u2014 qualification has no sources/ subdirectory. Do not create it.",
+        "adela_outbound/agents/qualification/state.py stub: from __future__ import annotations; from typing import TypedDict, Optional; class QualificationState(TypedDict): company_id: str; prospect_brief: dict; icp_definition: dict; criterion_scores: list; qualification_brief: Optional[dict]; decision: Optional[str]; rejection_note: Optional[str]; errors: list",
+        "adela_outbound/agents/qualification/events.py stub: import asyncio; sse_queues: list = []; async def broadcast(event: str, data: dict) -> None: pass",
+        "adela_outbound/agents/qualification/icp.py stub: SEED_ICP_CRITERIA: list = []; async def seed_icp_if_empty(conn: object) -> None: pass; async def load_icp(conn: object) -> dict: return {}",
+        "adela_outbound/agents/qualification/scorer.py stub: async def score_criterion(brief: dict, criterion: dict, client: object) -> dict: return {'criterion_id': '', 'score': 0, 'evidence': '', 'confidence': 0.0}; def aggregate_scores(criterion_scores: list, icp: dict) -> dict: return {'fit_score': 0.0, 'fit_tier': 'disqualified'}",
+        "adela_outbound/agents/qualification/nodes.py stub: import logging; logger = logging.getLogger(__name__); async def input_loader(state: dict) -> dict: return {}; async def criterion_scorer(state: dict) -> dict: return {}; async def aggregate_scorer(state: dict) -> dict: return {}; async def qualification_brief_builder(state: dict) -> dict: return {}; async def hitl_gate(state: dict) -> dict: return {}; async def resume_handler(state: dict) -> dict: return {}",
+        "adela_outbound/agents/qualification/graph.py stub: from langgraph.checkpoint.memory import MemorySaver; checkpointer = MemorySaver(); async def run_qualification(company_id: str) -> dict: return {}; async def resume_qualification(company_id: str, decision: str, rejection_note: str = None) -> dict: return {}",
+        "adela_outbound/api/routers/qualification.py stub: from fastapi import APIRouter; router = APIRouter()",
+        "tests/test_qualification_scorer.py stub: def test_scorer_placeholder(): assert True",
+        "tests/test_qualification_graph.py stub: def test_graph_placeholder(): assert True",
+        "python3 -c 'from adela_outbound.api.main import app; print(\"OK\")' exits 0.",
+        "python3 -m pytest tests/ -v \u2014 all PASSED including two new placeholder tests.",
+        "Commit: feat: US-001 - Qualification agent scaffold and stub files"
+      ],
+      "notes": "langgraph.checkpoint.memory.MemorySaver is the correct import path for LangGraph 0.2+. In older versions it was langgraph.checkpoint.MemorySaver. If the import fails, try: from langgraph.checkpoint.memory import MemorySaver. The graph.py stub imports MemorySaver at module level \u2014 this confirms the import path is correct before any other story runs."
     },
     {
       "id": "US-002",
-      "title": "Add typed document ingestion endpoint to sidecar",
-      "description": "As a backend developer, I need a POST /ingest/document endpoint that accepts governance, sop, and agent_log document types and ingests them into the Graphiti knowledge graph.",
-      "acceptanceCriteria": [
-        "POST /ingest/document endpoint exists in adela-graphiti-sidecar",
-        "Accepts JSON body with agent_id, document_type (governance|sop|agent_log), content (markdown text), source_name, optional metadata",
-        "Calls graphiti.add_episode() with ENTITY_TYPES and EDGE_TYPES",
-        "Episode name uses format: {document_type}:{source_name}",
-        "Returns JSON with episode_id, entities_extracted, edges_extracted, status (ok|error), optional error message",
-        "Does not throw on valid markdown input",
-        "Typecheck/lint passes"
-      ],
+      "title": "ICP seed definition and database operations",
       "priority": 2,
-      "passes": true,
-      "notes": "Add to existing router or create ingest_demo.py in adela-graphiti-sidecar/app/routers/. The three demo documents: governance_rules.md (governance), deal_qualification_sop_v2.1.md (sop), Agent_Log_Mar_11_2024.md (agent_log)."
+      "passes": false,
+      "description": "Implement icp.py with the seed ICP criteria, the seed-on-startup function, and the ICP loader. The ICP definition is stored in SQLite and editable from the dashboard \u2014 the qualification agent always reads from the DB, never from hardcoded values at runtime.",
+      "acceptanceCriteria": [
+        "adela_outbound/agents/qualification/icp.py \u2014 replace stub with full implementation.",
+        "Imports: from __future__ import annotations; import logging; import json; import uuid; from datetime import datetime, timezone; from adela_outbound.db.connection import get_db; logger = logging.getLogger(__name__).",
+        "SEED_ICP_CRITERIA module-level list of dicts \u2014 exactly 8 items matching icpSeedDefinition.criteria in this PRD. Each dict has keys: id (str), name (str), description (str), weight (str \u2014 exactly one of 'high', 'medium', 'low'). Example first item: {'id': 'services_mode', 'name': 'Services company in infrastructure mode', 'description': 'Has crossed from project work into infrastructure mode \u2014 deploying the same core product across 5+ enterprise clients', 'weight': 'high'}. Copy all 8 from icpSeedDefinition.criteria exactly.",
+        "async def seed_icp_if_empty(conn) -> None: cursor = await conn.execute('SELECT COUNT(*) FROM icp_definition'); row = await cursor.fetchone(); count = row[0] if row else 0; if count > 0: logger.debug('ICP definition already seeded, skipping'); return. Insert seed: seed_id = str(uuid.uuid4()); now = datetime.now(timezone.utc).isoformat(); await conn.execute('INSERT INTO icp_definition (id, version, criteria, created_at) VALUES (?,?,?,?)', (seed_id, 1, json.dumps(SEED_ICP_CRITERIA), now)); await conn.commit(); logger.info(f'Seeded ICP definition with {len(SEED_ICP_CRITERIA)} criteria').",
+        "async def load_icp(conn) -> dict: cursor = await conn.execute('SELECT * FROM icp_definition ORDER BY version DESC LIMIT 1'); row = await cursor.fetchone(); if not row: raise RuntimeError('ICP definition not found \u2014 seed_icp_if_empty must be called on startup'); d = dict(row); d['criteria'] = json.loads(d.get('criteria', '[]')); return d.",
+        "async def save_icp_version(conn, criteria: list) -> int: cursor = await conn.execute('SELECT MAX(version) FROM icp_definition'); row = await cursor.fetchone(); next_version = (row[0] or 0) + 1; now = datetime.now(timezone.utc).isoformat(); await conn.execute('INSERT INTO icp_definition (id, version, criteria, created_at) VALUES (?,?,?,?)', (str(uuid.uuid4()), next_version, json.dumps(criteria), now)); await conn.commit(); return next_version.",
+        "async def save_icp_suggestion(conn, suggestion_text: str, evidence: str) -> None: await conn.execute('INSERT INTO icp_suggestions (id, suggestion_text, evidence, status, created_at) VALUES (?,?,?,?,?)', (str(uuid.uuid4()), suggestion_text, evidence, 'pending', datetime.now(timezone.utc).isoformat())); await conn.commit().",
+        "adela_outbound/api/main.py must NOT be modified. Instead, seed_icp_if_empty must be called from the qualification graph's startup sequence \u2014 specifically called in the input_loader node if ICP is not yet loaded. Alternatively, add a startup call in the qualification router's startup event. The cleanest approach: call it lazily inside load_icp \u2014 if no rows found, call seed_icp_if_empty first then re-query. Update load_icp: if not row: await seed_icp_if_empty(conn); cursor2 = await conn.execute('SELECT * FROM icp_definition ORDER BY version DESC LIMIT 1'); row = await cursor2.fetchone(); if not row: raise RuntimeError('ICP seeding failed').",
+        "tests/test_qualification_scorer.py \u2014 add ICP seeding tests:",
+        "async def test_seed_icp_if_empty_inserts_criteria(tmp_path): Setup temp DB with CREATE_TABLES_SQL. Call await seed_icp_if_empty(conn). Query: SELECT COUNT(*) FROM icp_definition. Assert count == 1. Query criteria: SELECT criteria FROM icp_definition. Parse JSON. Assert len(criteria) == 8.",
+        "async def test_seed_icp_if_empty_is_idempotent(tmp_path): Call seed_icp_if_empty twice on same DB. Assert still only 1 row in icp_definition.",
+        "async def test_load_icp_returns_dict_with_criteria_list(tmp_path): Seed DB. Call load_icp(conn). Assert result is dict. Assert 'criteria' in result. Assert isinstance(result['criteria'], list). Assert len(result['criteria']) == 8.",
+        "python3 -m pytest tests/test_qualification_scorer.py -v -k icp \u2014 all PASSED."
+      ],
+      "notes": "The lazy seeding inside load_icp (seed if empty, then re-query) is the cleanest approach because it avoids needing to modify main.py's lifespan handler. The qualification graph calls load_icp in its input_loader node, which means seeding happens automatically on the first qualification run. No separate startup hook needed. save_icp_version uses INSERT not UPDATE \u2014 every ICP change creates a new version row, preserving the full history. The dashboard reads the highest version number."
     },
     {
       "id": "US-003",
-      "title": "Add gap detection endpoint to sidecar",
-      "description": "As a backend developer, I need a POST /gaps/detect endpoint that uses the knowledge graph to identify SOP gaps from agent signals.",
-      "acceptanceCriteria": [
-        "POST /gaps/detect endpoint exists",
-        "Accepts JSON with agent_id and signal object (triggered_rule, conflict_description, governance_ref, escalation_id, deal_id)",
-        "Constructs search query from signal fields and calls Graphiti hybrid search",
-        "Returns gap_detected (bool), gap_summary, affected_sop_rule, governing_rule_violated, confidence (0.0-1.0), relevant_graph_nodes array, suggested_patch_text",
-        "gap_detected=true for the Meridian scenario when all three demo docs are ingested",
-        "confidence >= 0.75 for the demo scenario",
-        "Returns gap_detected=false with confidence=0 when graph is empty",
-        "Typecheck/lint passes"
-      ],
+      "title": "Per-criterion Claude scorer and aggregate score calculator",
       "priority": 3,
-      "passes": true,
-      "notes": "Confidence = ratio of expected nodes found (3/3 = 1.0). suggested_patch_text is prose synthesized from graph context, not a Claude API call. Keep deterministic for demo reliability."
+      "passes": false,
+      "description": "Implement scorer.py with per-criterion Claude scoring (one call per criterion, run concurrently) and the weighted aggregate scorer that produces fit_score and fit_tier.",
+      "acceptanceCriteria": [
+        "adela_outbound/agents/qualification/scorer.py \u2014 replace stub with full implementation.",
+        "Imports: from __future__ import annotations; import logging; import json; import asyncio; from adela_outbound.config import config; logger = logging.getLogger(__name__).",
+        "WEIGHT_VALUES module-level dict: WEIGHT_VALUES = {'high': 3, 'medium': 2, 'low': 1}.",
+        "FIT_TIER_THRESHOLDS module-level dict: FIT_TIER_THRESHOLDS = {'strong': 0.75, 'moderate': 0.50, 'weak': 0.30}.",
+        "CRITERION_SCORING_PROMPT module-level string: 'You are evaluating a B2B prospect against a specific ICP criterion for Adela \u2014 a context and governance layer for services companies deploying bespoke technical work across enterprise clients. Score the prospect on a 0-3 scale: 0=no evidence this criterion is met, 1=weak or indirect signal, 2=moderate evidence, 3=strong clear evidence. Your evidence string must cite specific facts from the brief \u2014 never generic statements. Return a JSON object with exactly these keys: score (integer 0-3), evidence (string, 1-2 sentences citing specific details from the brief that justify the score), confidence (float 0.0-1.0 reflecting how certain you are given available information). Return only the JSON object.'",
+        "async def score_criterion(brief: dict, criterion: dict, client: object) -> dict: Takes a ProspectBrief dict, an ICPCriterion dict, and an AsyncAnthropic client. Returns dict with: criterion_id (str), score (int 0-3), evidence (str), confidence (float).",
+        "Build user message: user_msg = f'Criterion to evaluate: {criterion[\"name\"]}\\nCriterion description: {criterion[\"description\"]}\\nWeight: {criterion[\"weight\"]}\\n\\nProspect information:\\nCompany: {brief.get(\"company_name\", brief.get(\"summary\", \"\")[:50])}\\nSummary: {brief.get(\"summary\", \"\")[:500]}\\nCurrent focus: {brief.get(\"current_focus\", \"\")}\\nPain points: {json.dumps(brief.get(\"pain_points\", []))}\\nAdela relevance: {brief.get(\"adela_relevance\", \"\")}\\nPersonalization hooks: {json.dumps(brief.get(\"personalization_hooks\", []))}'",
+        "API call: response = await client.messages.create(model='claude-sonnet-4-20250514', max_tokens=300, system=CRITERION_SCORING_PROMPT, messages=[{'role': 'user', 'content': user_msg}]).",
+        "Parse: content = response.content[0].text.strip() if response.content else ''. Strip markdown fences (same pattern as all other agents). Parse JSON. If parse fails or result not dict: return {'criterion_id': criterion['id'], 'score': 0, 'evidence': 'Scoring failed \u2014 JSON parse error', 'confidence': 0.0}.",
+        "Validate score: score = int(parsed.get('score', 0)); score = max(0, min(3, score)). Return: {'criterion_id': criterion['id'], 'score': score, 'evidence': str(parsed.get('evidence', ''))[:500], 'confidence': float(parsed.get('confidence', 0.5))}.",
+        "Outer try/except Exception as e: logger.warning(f'Criterion scoring failed for {criterion[\"id\"]}: {e}'); return {'criterion_id': criterion['id'], 'score': 0, 'evidence': f'Scoring unavailable: {str(e)[:100]}', 'confidence': 0.0}.",
+        "async def score_all_criteria(brief: dict, icp: dict, client: object) -> list: Takes ProspectBrief dict, ICPDefinition dict (with criteria as list), and AsyncAnthropic client. Runs all criteria concurrently: criteria = icp.get('criteria', []); tasks = [score_criterion(brief, c, client) for c in criteria]; results = await asyncio.gather(*tasks, return_exceptions=True). Safe unpack: scores = []; for i, r in enumerate(results): if isinstance(r, Exception): criterion_id = criteria[i]['id'] if i < len(criteria) else f'criterion_{i}'; logger.warning(f'score_criterion raised for {criterion_id}: {r}'); scores.append({'criterion_id': criterion_id, 'score': 0, 'evidence': f'Exception: {str(r)[:100]}', 'confidence': 0.0}); else: scores.append(r). Return scores.",
+        "def aggregate_scores(criterion_scores: list, icp: dict) -> dict: Pure synchronous function \u2014 no async, no IO. Builds lookup: score_by_id = {s['criterion_id']: s['score'] for s in criterion_scores}. Builds weight lookup from icp criteria: weight_by_id = {c['id']: WEIGHT_VALUES.get(c['weight'], 1) for c in icp.get('criteria', [])}. Compute weighted sum: weighted_sum = sum(score_by_id.get(cid, 0) * w for cid, w in weight_by_id.items()). Compute max possible: max_possible = sum(3 * w for w in weight_by_id.values()). fit_score = round(weighted_sum / max_possible, 3) if max_possible > 0 else 0.0. fit_tier: if fit_score >= FIT_TIER_THRESHOLDS['strong']: fit_tier = 'strong'; elif fit_score >= FIT_TIER_THRESHOLDS['moderate']: fit_tier = 'moderate'; elif fit_score >= FIT_TIER_THRESHOLDS['weak']: fit_tier = 'weak'; else: fit_tier = 'disqualified'. Return: {'fit_score': fit_score, 'fit_tier': fit_tier, 'weighted_sum': weighted_sum, 'max_possible': max_possible}.",
+        "tests/test_qualification_scorer.py \u2014 add scorer tests:",
+        "def test_aggregate_scores_strong(): icp = {'criteria': [{'id': 'c1', 'weight': 'high'}, {'id': 'c2', 'weight': 'medium'}]}; scores = [{'criterion_id': 'c1', 'score': 3}, {'criterion_id': 'c2', 'score': 3}]; result = aggregate_scores(scores, icp); assert result['fit_tier'] == 'strong'; assert result['fit_score'] >= 0.75.",
+        "def test_aggregate_scores_disqualified(): icp = {'criteria': [{'id': 'c1', 'weight': 'high'}]}; scores = [{'criterion_id': 'c1', 'score': 0}]; result = aggregate_scores(scores, icp); assert result['fit_tier'] == 'disqualified'; assert result['fit_score'] == 0.0.",
+        "def test_aggregate_scores_handles_missing_criterion(): icp = {'criteria': [{'id': 'c1', 'weight': 'high'}, {'id': 'c2', 'weight': 'low'}]}; scores = [{'criterion_id': 'c1', 'score': 3}]; result = aggregate_scores(scores, icp); assert 0.0 <= result['fit_score'] <= 1.0.",
+        "async def test_score_criterion_returns_zero_on_claude_failure(tmp_path): Mock AsyncAnthropic client with messages.create raising Exception('API error'). Call result = await score_criterion({'summary': 'test'}, {'id': 'test_crit', 'name': 'Test', 'description': 'test', 'weight': 'high'}, mock_client). Assert result['criterion_id'] == 'test_crit'. Assert result['score'] == 0.",
+        "python3 -m pytest tests/test_qualification_scorer.py -v \u2014 all PASSED."
+      ],
+      "notes": "score_all_criteria runs all 8 criterion scorers concurrently \u2014 that is 8 simultaneous Claude API calls. This is intentional: sequential scoring would take 8x longer. The API cost is acceptable since qualification is a HITL-gated step that only runs after a human-approved discovery process. The aggregate_scores function is synchronous because it does pure arithmetic \u2014 no IO needed. Keeping it sync makes it trivially testable."
     },
     {
       "id": "US-004",
-      "title": "Add patch proposal endpoint to sidecar",
-      "description": "As a backend developer, I need a POST /patches/propose endpoint that generates a governed SOP patch with traceability from gap detection results.",
-      "acceptanceCriteria": [
-        "POST /patches/propose endpoint exists",
-        "Accepts JSON with agent_id, sop_id, gap_detection_result (full response from /gaps/detect)",
-        "Calls Claude API (claude-sonnet-4-20250514) to generate patch_text",
-        "Has hardcoded FALLBACK_PATCH for Rule 3.2.1 Multi-Entity Approval Routing used if Claude API fails (try/catch confirmed)",
-        "Returns patch_id (uuid), patch_text, patch_rule_id (3.2.1), patch_location, confidence, diff (before/after), traceability object, status (staged)",
-        "Traceability block contains all three source documents",
-        "diff.before contains original Rule 3.2 text, diff.after contains Rule 3.2 + Rule 3.2.1",
-        "status is 'staged' for confidence >= 0.75",
-        "Typecheck/lint passes"
-      ],
+      "title": "QualificationState, nodes, and LangGraph graph with MemorySaver HITL",
       "priority": 4,
-      "passes": true,
-      "notes": "Store patch in-memory (dict keyed by patch_id). No new Convex table needed. Convex SOP versioning handles the canonical record."
+      "passes": false,
+      "description": "Implement the complete QualificationState, all six nodes, and the LangGraph StateGraph with MemorySaver checkpointer and interrupt_before=['hitl_gate']. This is the most critical story \u2014 the HITL pattern must be exactly right.",
+      "acceptanceCriteria": [
+        "adela_outbound/agents/qualification/state.py \u2014 replace stub: from __future__ import annotations; from typing import TypedDict, Optional; class QualificationState(TypedDict): company_id: str; prospect_brief: dict; icp_definition: dict; criterion_scores: list; qualification_brief: Optional[dict]; decision: Optional[str]; rejection_note: Optional[str]; errors: list.",
+        "adela_outbound/agents/qualification/nodes.py \u2014 replace stub with full implementation.",
+        "nodes.py imports: from __future__ import annotations; import logging; import json; import uuid; from datetime import datetime, timezone; from typing import Optional; from anthropic import AsyncAnthropic; from adela_outbound.agents.qualification.state import QualificationState; from adela_outbound.agents.qualification.scorer import score_all_criteria, aggregate_scores; from adela_outbound.agents.qualification.icp import load_icp; from adela_outbound.agents.qualification.events import broadcast; from adela_outbound.db.connection import get_db; from adela_outbound.config import config; logger = logging.getLogger(__name__).",
+        "input_loader node: async def input_loader(state: QualificationState) -> dict. Loads prospect brief: async with get_db() as conn: cursor = await conn.execute('SELECT pb.*, dq.company_name, dq.website, dq.github_handle, dq.twitter_handle, dq.discovery_signal FROM prospect_briefs pb JOIN discovery_queue dq ON pb.company_id = dq.id WHERE pb.company_id = ?', [state['company_id']]); row = await cursor.fetchone(); if not row: raise ValueError(f'No prospect brief found for company_id={state[\"company_id\"]}. Research must complete before qualification.'). Parse brief: d = dict(row); d['pain_points'] = json.loads(d.get('pain_points') or '[]'); d['personalization_hooks'] = json.loads(d.get('personalization_hooks') or '[]'); d['research_sources'] = json.loads(d.get('research_sources') or '[]'); d['creative_outreach_opportunity'] = bool(d.get('creative_outreach_opportunity', 0)). Load ICP: icp = await load_icp(conn). Return: {'prospect_brief': d, 'icp_definition': icp, 'errors': []}.",
+        "criterion_scorer node: async def criterion_scorer(state: QualificationState) -> dict. client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY). scores = await score_all_criteria(state['prospect_brief'], state['icp_definition'], client). Return: {'criterion_scores': scores}.",
+        "aggregate_scorer node: async def aggregate_scorer(state: QualificationState) -> dict. result = aggregate_scores(state['criterion_scores'], state['icp_definition']). Return: {'qualification_brief': {**result, 'criterion_scores': state['criterion_scores']}}.",
+        "qualification_brief_builder node: async def qualification_brief_builder(state: QualificationState) -> dict. brief = dict(state.get('qualification_brief') or {}). Build why_now and suggested_outreach_angle with a single Claude call. client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY). prompt = f'Given this ICP qualification result for company \"{state[\"prospect_brief\"].get(\"company_name\", \"\")}\": fit_score={brief.get(\"fit_score\", 0)}, fit_tier={brief.get(\"fit_tier\", \"\")}, top criterion scores: {json.dumps(state[\"criterion_scores\"][:3])}. In 1-2 sentences each, provide: (1) why_now: why is now the right time to reach out to this company specifically? (2) suggested_outreach_angle: what specific angle or hook should the outreach message lead with? Return JSON with keys why_now and suggested_outreach_angle only.'. try: response = await client.messages.create(model='claude-sonnet-4-20250514', max_tokens=200, messages=[{'role': 'user', 'content': prompt}]); content = response.content[0].text.strip() if response.content else '{}'; strip fences; parsed = json.loads(content); brief['why_now'] = parsed.get('why_now', ''); brief['suggested_outreach_angle'] = parsed.get('suggested_outreach_angle', ''); except Exception as e: logger.warning(f'why_now generation failed: {e}'); brief['why_now'] = f'Score: {brief.get(\"fit_score\", 0)} ({brief.get(\"fit_tier\", \"\")})'; brief['suggested_outreach_angle'] = 'Review criterion scores for outreach angle'.",
+        "Auto-disqualify logic inside qualification_brief_builder: if brief.get('fit_tier') == 'disqualified': brief['status'] = 'auto_rejected'; brief['id'] = str(uuid.uuid4()); brief['company_id'] = state['company_id']; brief['created_at'] = datetime.now(timezone.utc).isoformat(). Write to DB and update discovery_queue: async with get_db() as conn: await conn.execute('INSERT OR REPLACE INTO qualification_briefs (id, company_id, fit_score, fit_tier, criterion_scores, why_now, suggested_outreach_angle, status, rejection_note, reviewed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)', (brief['id'], brief['company_id'], brief.get('fit_score',0), brief.get('fit_tier',''), json.dumps(state['criterion_scores']), brief.get('why_now',''), brief.get('suggested_outreach_angle',''), 'auto_rejected', 'Auto-rejected: fit_score below 0.30 threshold', None, brief['created_at'])); await conn.execute('UPDATE discovery_queue SET status = ?, updated_at = ? WHERE id = ?', ['disqualified', datetime.now(timezone.utc).isoformat(), state['company_id']]); await conn.commit(). Return: {'qualification_brief': brief, 'decision': 'auto_rejected'}.",
+        "For non-disqualified: set brief['status'] = 'pending_review'; brief['id'] = str(uuid.uuid4()); brief['company_id'] = state['company_id']; brief['created_at'] = datetime.now(timezone.utc).isoformat(). Write to DB with status='pending_review'. Emit SSE: await broadcast('qualify_pending', {'company_id': state['company_id'], 'company_name': state['prospect_brief'].get('company_name',''), 'fit_score': brief.get('fit_score',0), 'fit_tier': brief.get('fit_tier',''), 'timestamp': datetime.now(timezone.utc).isoformat()}). Return: {'qualification_brief': brief}.",
+        "hitl_gate node: async def hitl_gate(state: QualificationState) -> dict. This node does nothing \u2014 it is only a pause point. The interrupt happens BEFORE this node executes (interrupt_before=['hitl_gate']). The node body: logger.info(f'Resuming hitl_gate for {state[\"company_id\"]} with decision={state.get(\"decision\")}'); return {}.",
+        "resume_handler node: async def resume_handler(state: QualificationState) -> dict. decision = state.get('decision', ''); rejection_note = state.get('rejection_note'); now = datetime.now(timezone.utc).isoformat(); brief_id = state.get('qualification_brief', {}).get('id', ''). If decision == 'approved': async with get_db() as conn: await conn.execute('UPDATE qualification_briefs SET status = ?, reviewed_at = ? WHERE id = ?', ['approved', now, brief_id]); await conn.execute('UPDATE discovery_queue SET status = ?, updated_at = ? WHERE id = ?', ['qualified', now, state['company_id']]); await conn.commit(); logger.info(f'Approved: {state[\"company_id\"]}'). Elif decision == 'rejected': async with get_db() as conn: await conn.execute('UPDATE qualification_briefs SET status = ?, rejection_note = ?, reviewed_at = ? WHERE id = ?', ['rejected', rejection_note, now, brief_id]); await conn.execute('UPDATE discovery_queue SET status = ?, updated_at = ? WHERE id = ?', ['disqualified', now, state['company_id']]); await conn.execute('INSERT INTO icp_feedback (id, company_id, decision, rejection_note, decided_at) VALUES (?,?,?,?,?)', (str(uuid.uuid4()), state['company_id'], 'rejected', rejection_note, now)); await conn.commit(). Return: {'errors': state.get('errors', [])}.",
+        "python3 -c 'from adela_outbound.agents.qualification.nodes import input_loader, criterion_scorer, aggregate_scorer, qualification_brief_builder, hitl_gate, resume_handler; print(\"OK\")' exits 0.",
+        "python3 -m pytest tests/ -v \u2014 all PASSED."
+      ],
+      "notes": "The hitl_gate node is intentionally empty. LangGraph's interrupt_before=['hitl_gate'] pauses the graph BEFORE the node executes. When the graph is resumed, hitl_gate runs (does nothing) then the edge to resume_handler fires. This is correct \u2014 do not put logic in hitl_gate. The auto-disqualify logic inside qualification_brief_builder short-circuits the HITL flow by setting decision='auto_rejected' and writing directly to DB. The graph still routes through hitl_gate and resume_handler, but resume_handler sees decision='auto_rejected' \u2014 add an elif branch in resume_handler for 'auto_rejected' that simply returns without doing anything (the DB was already written)."
     },
     {
       "id": "US-005",
-      "title": "Add patch approve/reject endpoints to sidecar",
-      "description": "As a backend developer, I need POST /patches/{patch_id}/approve and /patches/{patch_id}/reject endpoints to handle patch decisions.",
-      "acceptanceCriteria": [
-        "POST /patches/{patch_id}/approve endpoint exists",
-        "Approve accepts JSON with agent_id, sop_id, approved_by",
-        "Approve returns status='approved', new_sop_version='v2.2', previous_version='v2.1', patch_id, approved_at (ISO timestamp)",
-        "POST /patches/{patch_id}/reject endpoint exists",
-        "Reject returns status='rejected', patch_id",
-        "Typecheck/lint passes"
-      ],
+      "title": "LangGraph graph assembly with MemorySaver, run_qualification, and resume_qualification",
       "priority": 5,
-      "passes": true,
-      "notes": "On approve: return approval metadata only. The frontend handles Convex SOP versioning. On reject: mark patch as rejected in-memory."
+      "passes": false,
+      "description": "Assemble the StateGraph with MemorySaver checkpointer, implement run_qualification() and resume_qualification() functions, and write a conditional edge for auto-disqualified companies.",
+      "acceptanceCriteria": [
+        "adela_outbound/agents/qualification/graph.py \u2014 replace stub with full implementation.",
+        "Imports: from __future__ import annotations; import uuid; from datetime import datetime, timezone; from langgraph.graph import StateGraph, END; from langgraph.checkpoint.memory import MemorySaver; from langgraph.types import Command; from adela_outbound.agents.qualification.state import QualificationState; from adela_outbound.agents.qualification.nodes import input_loader, criterion_scorer, aggregate_scorer, qualification_brief_builder, hitl_gate, resume_handler.",
+        "Checkpointer at module level: checkpointer = MemorySaver(). This is a module-level singleton \u2014 it persists graph state across the run_qualification and resume_qualification calls within the same process lifetime.",
+        "Graph with conditional edge for auto-disqualified: builder = StateGraph(QualificationState); builder.add_node('input_loader', input_loader); builder.add_node('criterion_scorer', criterion_scorer); builder.add_node('aggregate_scorer', aggregate_scorer); builder.add_node('qualification_brief_builder', qualification_brief_builder); builder.add_node('hitl_gate', hitl_gate); builder.add_node('resume_handler', resume_handler); builder.set_entry_point('input_loader'); builder.add_edge('input_loader', 'criterion_scorer'); builder.add_edge('criterion_scorer', 'aggregate_scorer'); builder.add_edge('aggregate_scorer', 'qualification_brief_builder').",
+        "Conditional edge after qualification_brief_builder: def _route_after_brief(state: QualificationState) -> str: if state.get('decision') == 'auto_rejected': return 'resume_handler'; return 'hitl_gate'. builder.add_conditional_edges('qualification_brief_builder', _route_after_brief, {'resume_handler': 'resume_handler', 'hitl_gate': 'hitl_gate'}); builder.add_edge('hitl_gate', 'resume_handler'); builder.add_edge('resume_handler', END).",
+        "Compile with interrupt and checkpointer: qualification_graph = builder.compile(checkpointer=checkpointer, interrupt_before=['hitl_gate']).",
+        "run_qualification function: async def run_qualification(company_id: str) -> dict: config = {'configurable': {'thread_id': company_id}}; initial: QualificationState = {'company_id': company_id, 'prospect_brief': {}, 'icp_definition': {}, 'criterion_scores': [], 'qualification_brief': None, 'decision': None, 'rejection_note': None, 'errors': []}; result = await qualification_graph.ainvoke(initial, config=config); return result. Note: when the graph hits interrupt_before=['hitl_gate'], ainvoke returns the current state \u2014 it does NOT raise an exception. The caller receives the state dict with decision=None.",
+        "resume_qualification function: async def resume_qualification(company_id: str, decision: str, rejection_note: str = None) -> dict: config = {'configurable': {'thread_id': company_id}}; resume_data = {'decision': decision, 'rejection_note': rejection_note}; result = await qualification_graph.ainvoke(Command(resume=resume_data), config=config); return result. The Command(resume=...) payload is merged into the graph state when the graph resumes. After resume, hitl_gate executes (does nothing), then resume_handler executes with the updated state.",
+        "python3 -c 'from adela_outbound.agents.qualification.graph import qualification_graph, run_qualification, resume_qualification, checkpointer; print(\"OK\")' exits 0.",
+        "python3 -m pytest tests/ -v \u2014 all PASSED."
+      ],
+      "notes": "The MemorySaver checkpointer stores graph state in memory \u2014 it is NOT persisted to disk. If the server restarts, all paused graphs are lost. This is acceptable for MVP since we do not expect the server to restart while Justin is in the middle of reviewing briefs. For production, replace MemorySaver with a SQLite-backed or Redis-backed checkpointer. The thread_id=company_id pattern means each company has exactly one graph checkpoint. If run_qualification is called twice for the same company_id, the second call overwrites the first checkpoint \u2014 this is intentional (re-running research replaces the old qualification)."
     },
     {
       "id": "US-006",
-      "title": "Add demo state aggregation endpoint to sidecar",
-      "description": "As a backend developer, I need a GET /demo/state endpoint that returns the full current demo state (ingested docs, graph nodes/edges, gap, patch) in one call for the frontend to consume.",
-      "acceptanceCriteria": [
-        "GET /demo/state?agent_id={agent_id} endpoint exists",
-        "Returns documents_ingested array (source_name, document_type, entity_count, ingested_at)",
-        "Returns graph_node_count, graph_edge_count",
-        "Returns latest_gap (null if no gap detected yet)",
-        "Returns latest_patch (null if no patch proposed yet)",
-        "Returns graph_nodes array (node_id, entity_type, name, summary, source_document) sufficient for d3-force rendering",
-        "Returns graph_edges array (source_id, target_id, relationship_type, fact) sufficient for d3-force rendering",
-        "Responds in < 2 seconds",
-        "Typecheck/lint passes"
-      ],
+      "title": "HITL resume/reject API endpoints with mandatory rejection note enforcement",
       "priority": 6,
-      "passes": true,
-      "notes": "This is the 'god endpoint' the frontend polls for all demo state. Aggregates in-memory data from ingestion, gap detection, and patch proposal steps."
+      "passes": false,
+      "description": "Implement the HITL endpoints for qualifying and rejecting briefs. Rejection notes are mandatory \u2014 the API returns 400 if the note is missing or empty. These are the most important endpoints in the system.",
+      "acceptanceCriteria": [
+        "adela_outbound/api/routers/qualification.py \u2014 replace stub with full implementation.",
+        "Imports: from __future__ import annotations; from fastapi import APIRouter, BackgroundTasks, HTTPException, Request; from fastapi.responses import StreamingResponse; from pydantic import BaseModel; from typing import Optional; import json; import asyncio; from datetime import datetime, timezone; from adela_outbound.db.connection import get_db; from adela_outbound.agents.qualification import events as qual_events; router = APIRouter().",
+        "Request models: class ApproveRequest(BaseModel): pass. (No body required for approve.) class RejectRequest(BaseModel): note: str; class RejectRequest validator: @validator('note') def note_must_not_be_empty(cls, v): if not v or not v.strip(): raise ValueError('Rejection note is required and cannot be empty'); return v.strip(). Use pydantic v2 syntax: from pydantic import field_validator; @field_validator('note') @classmethod def note_not_empty(cls, v: str) -> str: if not v or not v.strip(): raise ValueError('Rejection note required'); return v.strip().",
+        "POST /run/{company_id} \u2014 trigger qualification: @router.post('/run/{company_id}') async def trigger_qualification(company_id: str, background_tasks: BackgroundTasks) -> dict: from adela_outbound.agents.qualification.graph import run_qualification; background_tasks.add_task(run_qualification, company_id); return {'status': 'started', 'company_id': company_id}. Import inside function body.",
+        "POST /approve/{company_id}: @router.post('/approve/{company_id}') async def approve_qualification(company_id: str) -> dict. Check graph is paused: from adela_outbound.agents.qualification.graph import qualification_graph, checkpointer; config = {'configurable': {'thread_id': company_id}}; state = qualification_graph.get_state(config); if not state or not state.next: raise HTTPException(status_code=404, detail=f'No paused qualification found for company_id={company_id}. Either the graph has not run yet or already completed.'). Resume: from adela_outbound.agents.qualification.graph import resume_qualification; result = await resume_qualification(company_id, decision='approved'); return {'status': 'approved', 'company_id': company_id}.",
+        "POST /reject/{company_id}: @router.post('/reject/{company_id}') async def reject_qualification(company_id: str, body: RejectRequest) -> dict. Pydantic validates the note is non-empty \u2014 if empty, FastAPI returns 422 automatically. Additionally check manually: if not body.note.strip(): raise HTTPException(status_code=400, detail='Rejection note is required'). Check graph is paused (same as approve). Resume: result = await resume_qualification(company_id, decision='rejected', rejection_note=body.note.strip()); return {'status': 'rejected', 'company_id': company_id, 'note_recorded': True}.",
+        "GET /queue \u2014 MUST be defined before GET /{company_id}/brief: @router.get('/queue') async def get_qualification_queue(limit: int = 50) -> list. Queries qualification_briefs JOIN discovery_queue: async with get_db() as conn: cursor = await conn.execute('SELECT qb.id, qb.company_id, dq.company_name, qb.fit_score, qb.fit_tier, qb.why_now, qb.suggested_outreach_angle, qb.status, qb.created_at FROM qualification_briefs qb JOIN discovery_queue dq ON qb.company_id = dq.id WHERE qb.status = ? ORDER BY qb.fit_score DESC LIMIT ?', ['pending_review', limit]); rows = await cursor.fetchall(); return [dict(r) for r in rows].",
+        "GET /{company_id}/brief: @router.get('/{company_id}/brief') async def get_qualification_brief(company_id: str) -> dict. Queries qualification_briefs JOIN discovery_queue for company_name and prospect_briefs for brief details: async with get_db() as conn: cursor = await conn.execute('SELECT qb.*, dq.company_name, dq.website FROM qualification_briefs qb JOIN discovery_queue dq ON qb.company_id = dq.id WHERE qb.company_id = ?', [company_id]); row = await cursor.fetchone(); if not row: raise HTTPException(status_code=404, detail=f'No qualification brief for {company_id}'). d = dict(row); d['criterion_scores'] = json.loads(d.get('criterion_scores') or '[]'). Also fetch prospect_brief: cursor2 = await conn.execute('SELECT summary, adela_relevance, personalization_hooks, recommended_channel, creative_outreach_opportunity FROM prospect_briefs WHERE company_id = ?', [company_id]); brief_row = await cursor2.fetchone(); d['prospect_brief_summary'] = dict(brief_row) if brief_row else {}. Return d.",
+        "GET /stream \u2014 SSE endpoint same pattern as discovery and research: @router.get('/stream') async def stream_qualify_events(request: Request) -> StreamingResponse. Exact same implementation as research branch /stream endpoint but using qual_events.sse_queues.",
+        "python3 -c 'from adela_outbound.api.routers.qualification import router; print(len(router.routes), \"routes\")' exits 0.",
+        "python3 -m pytest tests/ -v \u2014 all PASSED."
+      ],
+      "notes": "The graph.get_state(config) call checks if a checkpoint exists for the thread_id. state.next is a tuple of node names that will execute next \u2014 if the graph is paused at interrupt_before=['hitl_gate'], state.next == ('hitl_gate',). If state.next is empty or None, the graph has either not run or already completed. The 404 check prevents resume_qualification from being called on a non-paused graph, which would cause LangGraph to raise an error. Route ordering: GET /queue before GET /{company_id}/brief."
     },
     {
       "id": "US-007",
-      "title": "Fix Graphiti sidecar connection in KG tab",
-      "description": "As a frontend developer, I need to fix the 'fetch failed' error in the Knowledge Graph tab so it correctly connects to the Graphiti sidecar.",
-      "acceptanceCriteria": [
-        "KG tab no longer shows 'fetch failed' when sidecar is running on localhost:8000",
-        "Loading spinner shown during fetch",
-        "Graceful offline state if sidecar is down: 'Knowledge graph offline' with subtle reconnect indicator (not broken-looking)",
-        "Typecheck/lint passes"
-      ],
+      "title": "ICP management endpoints \u2014 read, update, suggestions",
       "priority": 7,
-      "passes": true,
-      "notes": "Update src/lib/graphiti-client.ts and the KG tab component. Confirm sidecar URL (likely http://localhost:8000). Replace whatever hardcoded URL or env var is failing."
+      "passes": false,
+      "description": "Implement the ICP management endpoints that allow the dashboard to read the current ICP, save new versions, and manage refinement suggestions.",
+      "acceptanceCriteria": [
+        "adela_outbound/api/routers/qualification.py \u2014 add ICP endpoints.",
+        "GET /icp: @router.get('/icp') async def get_icp() -> dict. async with get_db() as conn: icp = await load_icp(conn). Return icp dict. Import load_icp at top of file: from adela_outbound.agents.qualification.icp import load_icp, save_icp_version, save_icp_suggestion.",
+        "PUT /icp: @router.put('/icp') async def update_icp(body: dict) -> dict. Validate body has 'criteria' key as list: if 'criteria' not in body or not isinstance(body['criteria'], list): raise HTTPException(400, 'Body must have criteria as list'). Validate each criterion has id, name, description, weight: for c in body['criteria']: if not all(k in c for k in ['id', 'name', 'description', 'weight']): raise HTTPException(400, f'Criterion missing required fields: {c}'). Save: async with get_db() as conn: new_version = await save_icp_version(conn, body['criteria']). Return: {'status': 'saved', 'version': new_version, 'criteria_count': len(body['criteria'])}.",
+        "GET /icp/suggestions: @router.get('/icp/suggestions') async def get_icp_suggestions() -> list. async with get_db() as conn: cursor = await conn.execute('SELECT * FROM icp_suggestions WHERE status = ? ORDER BY created_at DESC', ['pending']); rows = await cursor.fetchall(); return [dict(r) for r in rows].",
+        "POST /icp/suggestions/{suggestion_id}/accept: @router.post('/icp/suggestions/{suggestion_id}/accept') async def accept_suggestion(suggestion_id: str) -> dict. Fetch suggestion: async with get_db() as conn: cursor = await conn.execute('SELECT * FROM icp_suggestions WHERE id = ?', [suggestion_id]); row = await cursor.fetchone(); if not row: raise HTTPException(404, 'Suggestion not found'). The suggestion_text contains the full new ICP criteria as JSON \u2014 parse it: try: new_criteria = json.loads(dict(row).get('suggestion_text', '[]')); except: raise HTTPException(400, 'Could not parse suggestion as criteria JSON'). Save new version: new_version = await save_icp_version(conn, new_criteria). Mark accepted: await conn.execute('UPDATE icp_suggestions SET status = ? WHERE id = ?', ['accepted', suggestion_id]); await conn.commit(). Return: {'status': 'accepted', 'new_version': new_version}.",
+        "POST /icp/suggestions/{suggestion_id}/reject: @router.post('/icp/suggestions/{suggestion_id}/reject') async def reject_suggestion(suggestion_id: str) -> dict. async with get_db() as conn: result = await conn.execute('UPDATE icp_suggestions SET status = ? WHERE id = ?', ['rejected', suggestion_id]); await conn.commit(); if result.rowcount == 0: raise HTTPException(404, 'Suggestion not found'). Return: {'status': 'rejected'}.",
+        "python3 -m pytest tests/ -v \u2014 all PASSED."
+      ],
+      "notes": "The accept_suggestion endpoint assumes suggestion_text contains JSON-serialised criteria list. This is enforced when suggestions are created by the weekly batch job in US-008. The suggestion format must be documented clearly so the dashboard knows how to display suggestions (as text for human reading) while the backend parses them as criteria JSON for acceptance."
     },
     {
       "id": "US-008",
-      "title": "Build three-panel Knowledge Graph UI — graph canvas",
-      "description": "As a user, I want to see a d3-force graph visualization of knowledge graph nodes and edges so I can explore entity relationships.",
-      "acceptanceCriteria": [
-        "Three-panel layout: graph canvas (60%), node detail (20%), signal feed (20%)",
-        "d3-force graph renders nodes and edges from GET /demo/state endpoint data",
-        "Node colors by entity type: SOP=#9CA896 (sage), GovernanceRule=#7CA8D8 (blue), AgentSignal=#D8B87C (amber), other=#505050 (muted)",
-        "Node sizes: degree-based sizing (min 6px radius, max 16px)",
-        "Hover node shows tooltip with entity name + type label in IBM Plex Mono uppercase",
-        "New node pulse animation: scale 1→1.3→1, 600ms when first appearing after ingestion",
-        "Layout stable on 1280px+ viewport",
-        "Typecheck/lint passes"
-      ],
+      "title": "Weekly ICP refinement suggestion job",
       "priority": 8,
-      "passes": true,
-      "notes": "d3-force is already installed (@types/d3-force in devDependencies). Fetch from GET /demo/state. Panel 2 and 3 are separate stories."
+      "passes": false,
+      "description": "Implement the APScheduler job that runs weekly, analyses recent rejection patterns using Claude, and saves up to 3 ICP refinement suggestions to the icp_suggestions table.",
+      "acceptanceCriteria": [
+        "adela_outbound/agents/qualification/icp.py \u2014 add weekly suggestion generation function.",
+        "async def generate_icp_suggestions() -> None: Module-level async function with no parameters. Opens DB connection. Fetches last 30 days of icp_feedback: async with get_db() as conn: cursor = await conn.execute('SELECT f.company_id, f.decision, f.rejection_note, dq.company_name, dq.discovery_signal FROM icp_feedback f JOIN discovery_queue dq ON f.company_id = dq.id WHERE DATE(f.decided_at) >= DATE(\\'now\\', \\'-30 days\\') ORDER BY f.decided_at DESC'); rows = await cursor.fetchall(); feedback_list = [dict(r) for r in rows].",
+        "If len(feedback_list) < 3: logger.info('Not enough feedback data for ICP suggestions (need >= 3 rejections)'); return.",
+        "Build Claude prompt: feedback_summary = json.dumps([{'company': f['company_name'], 'decision': f['decision'], 'note': f['rejection_note'], 'signal': f['discovery_signal']} for f in feedback_list], indent=2); prompt = f'You are analysing prospect rejection patterns to improve ICP targeting. Here are the last 30 days of qualification decisions:\\n{feedback_summary}\\n\\nIdentify up to 3 specific, actionable ICP refinement suggestions. Each suggestion must: (1) cite specific evidence from the rejection notes, (2) propose a concrete change to ICP criteria, (3) be expressed as updated criteria JSON. Return a JSON array of up to 3 objects, each with keys: suggestion_text (string: the human-readable suggestion), evidence (string: specific evidence from the data), new_criteria (array: the full updated criteria list as it should be stored). Return only the JSON array.'",
+        "Claude call: from anthropic import AsyncAnthropic; client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY); current_icp = await load_icp(conn); icp_str = json.dumps(current_icp.get('criteria', [])). system = f'Current ICP criteria for context: {icp_str}'. response = await client.messages.create(model='claude-sonnet-4-20250514', max_tokens=1500, system=system, messages=[{'role': 'user', 'content': prompt}]).",
+        "Parse response: content = response.content[0].text.strip() if response.content else '[]'; strip fences; try: suggestions = json.loads(content); except: logger.warning('ICP suggestion generation returned invalid JSON'); return. if not isinstance(suggestions, list): return.",
+        "Save each suggestion: for s in suggestions[:3]: if isinstance(s, dict) and s.get('suggestion_text') and s.get('new_criteria'): await save_icp_suggestion(conn, json.dumps(s.get('new_criteria', [])), s.get('evidence', '')).",
+        "adela_outbound/scheduler.py must NOT be modified \u2014 it is owned by feature/agent-discovery. Instead, the qualification router registers the weekly job on startup using a FastAPI startup event on the router itself. Add to qualification.py router: from fastapi import APIRouter; router = APIRouter(on_startup=[_register_weekly_job]). Define: async def _register_weekly_job() -> None: from apscheduler.schedulers.asyncio import AsyncIOScheduler; from adela_outbound.agents.qualification.icp import generate_icp_suggestions; from adela_outbound.scheduler import scheduler; scheduler.add_job(generate_icp_suggestions, 'cron', day_of_week='sun', hour=20, minute=0, id='icp_suggestion_job', replace_existing=True, misfire_grace_time=3600); logger.info('Registered weekly ICP suggestion job'). This attaches to the existing scheduler singleton from scheduler.py without modifying that file.",
+        "python3 -m pytest tests/ -v \u2014 all PASSED."
+      ],
+      "notes": "The on_startup callback on the router is a FastAPI feature \u2014 it fires when the application starts, just like lifespan handlers. This is the correct way for this branch to add to the scheduler without modifying scheduler.py (which is owned by feature/agent-discovery). The scheduler singleton is imported from adela_outbound.scheduler \u2014 it is the same object that main.py started in the lifespan handler. Adding a job to it after startup works because APScheduler supports adding jobs at any time while running."
     },
     {
       "id": "US-009",
-      "title": "Build KG node detail panel and signal feed panel",
-      "description": "As a user, I want to click a graph node to see its details, and see a real-time signal feed of ingestion events.",
-      "acceptanceCriteria": [
-        "Click node in graph canvas populates Panel 2 (node detail) with: entity type badge, entity name, summary, source document, connected nodes list",
-        "Panel 2 empty state: 'Select a node to inspect' in muted text",
-        "Panel 3 (signal feed) shows live feed of ingestion events and gap detection signals",
-        "Each signal card: rounded-[4px] border-l-2 bg-[#181818] p-3, border color matches entity type color",
-        "Signal feed updates via polling (every 3s) or Convex real-time subscription",
-        "Typecheck/lint passes"
-      ],
+      "title": "Integration test \u2014 full graph run with HITL pause and resume",
       "priority": 9,
-      "passes": true,
-      "notes": "Panel 2 data comes from node click. Panel 3 data comes from Convex agentDocuments or containerRuns table, or from /demo/state polling."
+      "passes": false,
+      "description": "Write an integration test that runs the full qualification graph, verifies it pauses at the HITL interrupt, then resumes with an approval decision and verifies the SQLite output.",
+      "acceptanceCriteria": [
+        "tests/test_qualification_graph.py \u2014 replace placeholder with full integration test.",
+        "Setup function: create temp SQLite DB, run CREATE_TABLES_SQL, insert test data. Insert into discovery_queue: id='qual-test-001', company_name='FDE Tools', status='researched' (and all other required columns). Insert into prospect_briefs: company_id='qual-test-001', summary='FDE Tools builds forward deployed engineering tooling for enterprise clients scaling across multiple regulated industries.', current_focus='Scaling from 3 to 12 enterprise fintech clients.', pain_points=json.dumps(['Context fragmentation across client deployments', 'No SOP versioning for agent configurations']), adela_relevance='Direct ICP match \u2014 scaling regulated enterprise deployments with no governance tooling.', personalization_hooks=json.dumps(['Open GitHub issue about multi-tenant context isolation']), creative_outreach_opportunity=1, creative_outreach_detail='GitHub issue #5', recommended_channel='github', research_sources=json.dumps(['https://fdetools.io']), confidence_score=0.8, raw_research='{}', created_at=now. Insert into icp_definition with the 8 seed criteria.",
+        "Patch config.DB_PATH in connection module and nodes module. Patch config.ANTHROPIC_API_KEY = 'test'.",
+        "Mock Claude for criterion scoring: patch score_all_criteria to return 8 criterion score dicts each with score=2, evidence='Strong signal', confidence=0.8. Mock AsyncAnthropic for qualification_brief_builder why_now generation to return JSON with why_now and suggested_outreach_angle.",
+        "Test HITL pause: from adela_outbound.agents.qualification.graph import run_qualification, resume_qualification, qualification_graph, checkpointer; result = await run_qualification('qual-test-001'). Assert result is not None (graph returned state at interrupt). Verify graph is paused: from langgraph.types import StateSnapshot; state = qualification_graph.get_state({'configurable': {'thread_id': 'qual-test-001'}}); assert state is not None; assert 'hitl_gate' in (state.next or ()) or state.next, f'Expected graph to be paused at hitl_gate, got next={state.next}'.",
+        "Verify brief was written to DB before pause: async with aiosqlite.connect(db_path) as conn: cursor = await conn.execute('SELECT status FROM qualification_briefs WHERE company_id = ?', ['qual-test-001']); row = await cursor.fetchone(); assert row is not None; assert row[0] == 'pending_review'.",
+        "Test resume with approval: result2 = await resume_qualification('qual-test-001', decision='approved'). Verify DB updated: async with aiosqlite.connect(db_path) as conn: cursor = await conn.execute('SELECT status FROM qualification_briefs WHERE company_id = ?', ['qual-test-001']); row = await cursor.fetchone(); assert row[0] == 'approved'. cursor2 = await conn.execute('SELECT status FROM discovery_queue WHERE id = ?', ['qual-test-001']); row2 = await cursor2.fetchone(); assert row2[0] == 'qualified'.",
+        "Test auto-disqualify (separate test): mock score_all_criteria to return all scores of 0. Run run_qualification for a new company_id 'qual-test-002'. Verify: qualification_briefs status = 'auto_rejected'. Verify discovery_queue status = 'disqualified'. Verify graph is NOT paused (state.next is empty).",
+        "python3 -m pytest tests/test_qualification_graph.py -v \u2014 all PASSED."
+      ],
+      "notes": "The HITL pause verification using qualification_graph.get_state() is the key assertion. state.next should contain 'hitl_gate' when paused. However, LangGraph's exact API for get_state varies slightly by version \u2014 if state.next is a tuple, check 'hitl_gate' in state.next. If it is a list, check similarly. The assertion uses 'hitl_gate' in (state.next or ()) which handles both tuple and list. The test imports qualification_graph directly from graph.py \u2014 the same module-level compiled graph that the API endpoints use. This means the test's paused graph state is accessible to the resume_qualification call because they share the same in-memory checkpointer."
     },
     {
       "id": "US-010",
-      "title": "Documents tab — type selector and sidecar upload",
-      "description": "As a user, I want to upload documents with a type selector (governance/sop/agent_log) and see them ingested into the knowledge graph with entity counts.",
-      "acceptanceCriteria": [
-        "Document type selector before upload: dropdown or segmented control with options governance | sop | agent_log",
-        "Upload reads file as text and calls POST /ingest/document on the sidecar",
-        "On success: document card appears with type badge and entity count from response",
-        "Badge colors: governance=#7CA8D8 at 15% opacity, sop=#9CA896 at 15% opacity, agent_log=#D8B87C at 15% opacity",
-        "On error: red toast 'Ingestion failed — [error message]'",
-        "Typecheck/lint passes"
-      ],
+      "title": "events.py SSE bus and README",
       "priority": 10,
-      "passes": true,
-      "notes": "Current state: upload area + 'No documents uploaded yet' empty state. Add type selector and wire upload to sidecar instead of (or in addition to) existing Convex upload."
-    },
-    {
-      "id": "US-011",
-      "title": "SOPs tab — active and staged SOP cards",
-      "description": "As a user, I want to see active SOPs and staged patches in the SOPs tab so I can review and approve SOP changes.",
+      "passes": false,
+      "description": "Replace events.py stub with full implementation and write project documentation.",
       "acceptanceCriteria": [
-        "SOPs tab shows two sections: Active and Staged",
-        "Active SOP card shows: [ACTIVE] badge (sage green), version (v2.1), title, last updated, rule count, arrow link",
-        "Staged SOP card appears after patch proposal: [STAGED] badge (amber), [PENDING APPROVAL] badge, version (v2.2 draft), proposed change count, trigger escalation ID",
-        "Staged card has [Reject] and [Review & Approve →] buttons",
-        "'Review & Approve →' navigates to /dashboard/[agentId]/patch/[sopId]",
-        "After approval, card updates from staged to [ACTIVE] v2.2",
-        "Data sourced from Convex sops and sopVersions tables",
-        "Typecheck/lint passes"
+        "adela_outbound/agents/qualification/events.py \u2014 replace stub: import asyncio; sse_queues: list = []; async def broadcast(event: str, data: dict) -> None: for q in sse_queues: try: q.put_nowait({'event': event, 'data': data}); except asyncio.QueueFull: pass. Zero imports from adela_outbound.",
+        ".env.example: confirm ANTHROPIC_API_KEY is present (from cherry-pick). No new API keys needed by qualification agent.",
+        "README.md \u2014 create/update: ## Adela Outbound \u2014 ICP Qualification Agent. ## What This Agent Does. ## HITL Architecture (explains interrupt/resume pattern, why every decision must be manual). ## Parallel Branch Architecture (cherry-pick requirement, locked files warning). ## Setup. ## Running (port 8002 to avoid conflict with discovery 8000 and research 8001). ## API Endpoints table: POST /run/{id}, POST /approve/{id}, POST /reject/{id} (note: rejection note required), GET /queue, GET /{id}/brief, GET /icp, PUT /icp, GET /icp/suggestions, POST /icp/suggestions/{id}/accept, POST /icp/suggestions/{id}/reject, GET /stream. ## Testing. ## Shared Contract Warning.",
+        "README.md note on rejection: '> \u26a0\ufe0f **Rejection notes are mandatory.** POST /reject/{company_id} returns HTTP 422 if the note field is missing or empty. This is enforced at the API layer and is intentional \u2014 rejection notes feed the weekly ICP refinement loop.'",
+        "python3 -m pytest tests/ -v \u2014 all PASSED.",
+        "python3 -c 'from adela_outbound.api.routers.qualification import router; print(\"OK\")' exits 0."
       ],
-      "priority": 11,
-      "passes": true,
-      "notes": "Current state: 'No SOPs for this agent yet.' empty state. On approve from diff page: Convex mutation archives current version, creates new active sopVersions record with v2.2 content."
-    },
-    {
-      "id": "US-012",
-      "title": "SOP Diff page — left panel with GitHub-style diff renderer",
-      "description": "As a user, I want to see the proposed SOP patch as a GitHub-style red/green diff so I can review exactly what changes.",
-      "acceptanceCriteria": [
-        "Route: /dashboard/[agentId]/patch/[sopId] exists",
-        "Two-column layout: SOP diff (left, 55%) and traceability (right, 45%)",
-        "Diff renders with: removed lines bg-[#2d1515] border-l-4 border-[#D87C7C] text-[#D87C7C], added lines bg-[#152d1a] border-l-4 border-[#9CA896] text-[#9CA896], context lines bg-[#181818] text-[#707070]",
-        "Line numbers in IBM Plex Mono, muted",
-        "Version labels below diff: CURRENT v2.1 → PROPOSED v2.2",
-        "Approve and Reject buttons below version labels, monospace uppercase full-width",
-        "Typecheck/lint passes"
-      ],
-      "priority": 12,
-      "passes": true,
-      "notes": "Diff data comes from patch proposal response (diff.before / diff.after). Traceability panel is a separate story."
-    },
-    {
-      "id": "US-013",
-      "title": "SOP Diff page — traceability panel with accordion panels",
-      "description": "As a user, I want to see why a patch was proposed via three traceability accordion panels (Agent Signal, Governance Rule, SOP Gap) with expand-to-source capability.",
-      "acceptanceCriteria": [
-        "Right panel header: 'WHY THIS PATCH?' in IBM Plex Mono uppercase",
-        "Three accordion panels all expanded by default: Agent Signal (RULE_CONFLICT), Governance Rule (G-006), SOP Gap (Rule 3.2)",
-        "Each panel shows structured metadata matching the demo scenario data",
-        "'Expand to source' toggle on each panel shows raw source text excerpt in bg-[#0F0F0F] font-mono text-sm text-[#A0A0A0] p-4 rounded-[4px]",
-        "Traceability data sourced from patch proposal response traceability object",
-        "Typecheck/lint passes"
-      ],
-      "priority": 13,
-      "passes": true,
-      "notes": "All three panels must show correct data for the Meridian demo scenario. Agent Signal panel shows escalation_id, deal_id, entities, timestamp. Governance panel shows rule_id, enforcement, requirement. SOP Gap panel shows current_rule, gap description, patch."
-    },
-    {
-      "id": "US-014",
-      "title": "SOP Diff page — approve/reject actions with Convex versioning",
-      "description": "As a user, I want to approve or reject a patch from the diff page, with approve creating a new SOP version in Convex.",
-      "acceptanceCriteria": [
-        "Approve button calls POST /patches/{patch_id}/approve on sidecar",
-        "On approve success: Convex mutation archives current active version, creates new sopVersions record with v2.2 content",
-        "Success state: sage green banner 'Patch approved. SOP updated to v2.2.'",
-        "Navigates back to SOPs tab after 2 seconds",
-        "Reject button calls POST /patches/{patch_id}/reject on sidecar",
-        "On reject: brief 'Patch rejected.' message, navigates back to SOPs tab",
-        "Typecheck/lint passes"
-      ],
-      "priority": 14,
-      "passes": true,
-      "notes": "Convex mutations needed: mark current sop as archived/deprecated, create new sopVersions record. Use existing sops and sopVersions tables from schema."
-    },
-    {
-      "id": "US-015",
-      "title": "Live SOP Test page — side-by-side Adela vs Claude MD comparison",
-      "description": "As a user, I want to run a scenario through both Adela and raw Claude Memory/MD side-by-side to see why Adela is better for traceability.",
-      "acceptanceCriteria": [
-        "Route: /dashboard/[agentId]/sop-test exists",
-        "Scenario textarea pre-filled with Meridian co-signatory scenario text",
-        "'Run Test' button triggers two Claude API calls simultaneously",
-        "Left panel (Adela): system prompt instructs structured governed SOP response with citations and version tracking",
-        "Right panel (Claude MD): system prompt is generic helpful assistant with pasted SOP markdown",
-        "Loading states shown while calls are in flight",
-        "Capability comparison chips below each panel: gap detection (✓/✗), governance referenced (✓/✗), patch proposed (✓/✗), audit trail (✓/✗)",
-        "Hardcoded fallback responses used if Claude API calls fail (try/catch for both)",
-        "Typecheck/lint passes"
-      ],
-      "priority": 15,
-      "passes": true,
-      "notes": "Claude calls made from API route (not client-side). Left panel uses structured Adela system prompt. Right panel uses generic assistant prompt. Fallback text defined in PRD Section 6.2."
-    },
-    {
-      "id": "US-016",
-      "title": "Benchmark page — static 9/10 vs 4/10 comparison",
-      "description": "As a user, I want to see a static benchmark page comparing Adela (9/10) vs Claude Memory/MD (4/10) on traceability-dependent scenarios.",
-      "acceptanceCriteria": [
-        "Route: /dashboard/benchmark exists",
-        "Page is fully static — no API calls, no loading states",
-        "Two large score cards: Adela 9/10 (sage green accent) and Claude MD 4/10 (muted/gray)",
-        "Progress bars: Adela 90% filled, Claude MD 40% filled",
-        "Table of 10 scenarios with: scenario description, Adela result (✓ sage/✗ red), Claude MD result (✓/✗), failure chips",
-        "Failure chips: MULTI-SIGNAL, GOVERNANCE-DEPENDENT, VERSION-AWARENESS, GRAPH-TRAVERSAL in colored monospace badges",
-        "Alternating row background: #181818 / #121212",
-        "Navigable from sidebar or top nav (add 'Benchmark' link)",
-        "Typecheck/lint passes"
-      ],
-      "priority": 16,
-      "passes": true,
-      "notes": "All data is hardcoded. 10 scenarios exactly as defined in PRD Section 7. Score: Adela passes scenarios 1-10 except one partial (9/10). Claude MD passes scenarios 5, 9 and two partials (4/10)."
-    },
-    {
-      "id": "US-017",
-      "title": "Add demo navigation links to dashboard sidebar",
-      "description": "As a user, I want to navigate to the new demo pages (Benchmark, Live SOP Test) from the dashboard sidebar/nav.",
-      "acceptanceCriteria": [
-        "Benchmark link added to dashboard sidebar or navigation",
-        "Live SOP Test link added (if not already accessible from SOPs tab)",
-        "Links navigate correctly to /dashboard/benchmark and /dashboard/[agentId]/sop-test",
-        "Active state styling matches existing nav pattern",
-        "Typecheck/lint passes"
-      ],
-      "priority": 17,
-      "passes": true,
-      "notes": "Check existing dashboard layout.tsx for nav pattern. Add links following existing sidebar component structure."
+      "notes": "Port 8002 for the qualification agent during development avoids conflicts with discovery (8000) and research (8001). In the merged service, all three share port 8000 under different route prefixes."
     }
   ],
   "constraints": {
-    "scope": [
-      "No breaking changes to existing routes — current dashboard shell with four tabs must continue to work",
-      "Hardcoded fallbacks required on all Claude API calls (Live SOP Test, Patch Proposal)",
-      "Demo data is fixed — do not change scenario (deal ID, entity names, escalation ID, SOP rule numbers)",
-      "No new Graphiti infrastructure — use existing ENTITY_TYPES and EDGE_TYPES dicts",
-      "No new Convex tables — use existing sops, sopVersions, agentDocuments, containerRuns",
-      "Sidecar state is in-memory for the demo — patch proposals and gap detection results don't need Convex persistence"
-    ],
-    "performance": {
-      "allEndpoints": "< 2 seconds response time in happy path",
-      "pageLoad": "< 2 seconds on broadband",
-      "graphRendering": "Stable on 1280px+ viewport"
-    }
+    "python39Compat": "Python 3.9.6. from __future__ import annotations at top of all files with type hints. Optional[X] not X|None. No match/case.",
+    "fileOwnership": "Only files in parallelContext.ownedFiles. Never touch doNotTouch.",
+    "noModifyMainPy": "adela_outbound/api/main.py is owned by feature/agent-discovery. Do not modify it. Use router on_startup for the weekly job registration.",
+    "noModifySchedulerPy": "adela_outbound/scheduler.py is owned by feature/agent-discovery. Add the weekly job via the router on_startup callback which calls scheduler.add_job() on the existing singleton.",
+    "hitlIsMandatory": "Every qualification decision (approved or rejected) must come from Justin via the API. The graph must NEVER auto-approve any company regardless of fit_score. Auto-rejection for fit_score < 0.30 is the only exception and must be clearly labelled as 'auto_rejected' not 'approved'.",
+    "rejectionNoteRequired": "POST /reject/{company_id} must return HTTP 400 or 422 if rejection note is missing or empty string. This is a hard requirement \u2014 do not make it optional.",
+    "memoryCheckpointerScope": "MemorySaver stores state in memory. All graph state is lost on server restart. This is acceptable for MVP. The module-level checkpointer singleton means run_qualification and resume_qualification share the same checkpoint store within one process.",
+    "commandResumeImport": "from langgraph.types import Command \u2014 confirm this import path works for your LangGraph version. If it fails, try: from langgraph import Command. Run python3 -c 'from langgraph.types import Command; print(\"OK\")' to verify before using it.",
+    "routeOrdering": "GET /queue before GET /{company_id}/brief. GET /icp/suggestions before GET /icp (if parameterised). Static paths always before parameterised paths.",
+    "noUI": "Zero frontend files.",
+    "noExternalSourceAdapters": "Qualification agent has no external API source adapters (no Brave, Firecrawl, Perplexity). Only Claude for scoring."
   },
-  "security": {
-    "auth": "Clerk handles all auth. Sidecar endpoints are internal-only (no Clerk auth needed on sidecar).",
-    "secrets": "ANTHROPIC_API_KEY for Claude calls in Live SOP Test and patch generation. All server-side only."
-  },
-  "nonGoals": [
-    "Persistent sidecar state across restarts",
-    "Production-grade Graphiti performance tuning",
-    "Mobile responsive design for demo pages",
-    "Automated testing of demo flow",
-    "Multi-agent demo scenarios"
-  ]
+  "qualityChecks": {
+    "afterEveryStory": [
+      "python3 -c 'from adela_outbound.api.main import app; print(\"OK\")' \u2014 must exit 0",
+      "python3 -m pytest tests/ -v \u2014 all collected tests must show PASSED",
+      "python3 -c 'from adela_outbound.agents.qualification.graph import qualification_graph, run_qualification, resume_qualification; print(\"OK\")' \u2014 must exit 0 from US-005 onward",
+      "python3 -c 'from langgraph.types import Command; from langgraph.checkpoint.memory import MemorySaver; print(\"OK\")' \u2014 verify LangGraph HITL imports work"
+    ]
+  }
 }

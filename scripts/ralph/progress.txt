@@ -1,0 +1,30 @@
+## Codebase Patterns
+- Use `from __future__ import annotations` at top of all files with type hints (Python 3.9.6 compat)
+- LangGraph MemorySaver import: `from langgraph.checkpoint.memory import MemorySaver`
+- LangGraph Command import: `from langgraph.types import Command`
+- Never modify `adela_outbound/api/main.py` or `adela_outbound/scheduler.py` — owned by feature/agent-discovery
+- Never modify `adela_outbound/db/schemas.py` or `adela_outbound/db/contracts.py` — owned by feature/agent-discovery
+- Config singleton: `from adela_outbound.config import config`
+- DB connection: `from adela_outbound.db.connection import get_db` used as `async with get_db() as conn:`
+- pytest with `asyncio_mode = auto` in pytest.ini — no need for `@pytest.mark.asyncio` decorator
+
+## 2026-03-29 - US-001
+- Created all qualification agent scaffold and stub files
+- Files created:
+  - adela_outbound/agents/qualification/__init__.py (empty)
+  - adela_outbound/agents/qualification/state.py (QualificationState TypedDict)
+  - adela_outbound/agents/qualification/events.py (SSE bus stub)
+  - adela_outbound/agents/qualification/icp.py (ICP operations stub)
+  - adela_outbound/agents/qualification/scorer.py (criterion scorer stub)
+  - adela_outbound/agents/qualification/nodes.py (6 graph nodes stub)
+  - adela_outbound/agents/qualification/graph.py (MemorySaver + run/resume stubs)
+  - adela_outbound/api/routers/qualification.py (APIRouter stub)
+  - tests/test_qualification_scorer.py (placeholder test)
+  - tests/test_qualification_graph.py (placeholder test)
+- Verified: contracts import OK, schemas tables OK, langgraph imports OK, all 3 tests PASSED
+- **Learnings for future iterations:**
+  - Cherry-pick from feature/agent-discovery already applied — contracts and schemas are in place
+  - langgraph is already in requirements.txt from the cherry-pick
+  - pytest.ini has `asyncio_mode = auto` — async tests work without decorator
+  - qualification agent has NO sources/ subdirectory (unlike discovery)
+---
