@@ -140,7 +140,7 @@
       "id": "US-002",
       "title": "ICP seed definition and database operations",
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "description": "Implement icp.py with the seed ICP criteria, the seed-on-startup function, and the ICP loader. The ICP definition is stored in SQLite and editable from the dashboard \u2014 the qualification agent always reads from the DB, never from hardcoded values at runtime.",
       "acceptanceCriteria": [
         "adela_outbound/agents/qualification/icp.py \u2014 replace stub with full implementation.",

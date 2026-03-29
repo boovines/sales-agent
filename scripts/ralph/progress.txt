@@ -28,3 +28,16 @@
   - pytest.ini has `asyncio_mode = auto` — async tests work without decorator
   - qualification agent has NO sources/ subdirectory (unlike discovery)
 ---
+
+## 2026-03-29 - US-002
+- Implemented icp.py with full ICP seed definition, seed_icp_if_empty, load_icp (with lazy seeding), save_icp_version, and save_icp_suggestion
+- Files changed:
+  - adela_outbound/agents/qualification/icp.py (full implementation replacing stub)
+  - tests/test_qualification_scorer.py (3 ICP tests replacing placeholder)
+- All 5 tests PASSED
+- **Learnings for future iterations:**
+  - load_icp uses lazy seeding — if no rows, calls seed_icp_if_empty then re-queries. No startup hook needed.
+  - save_icp_version uses INSERT not UPDATE — creates new version row each time for full history
+  - aiosqlite.Row factory must be set on conn for dict(row) to work in load_icp
+  - Test helper _make_conn(tmp_path) creates an in-memory DB with all tables — reusable for future test files
+---
