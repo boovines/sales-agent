@@ -9,7 +9,11 @@ class Settings(BaseSettings):
     FIRECRAWL_API_KEY: str = ''
     PERPLEXITY_API_KEY: str = ''
     COMPOSIO_API_KEY: str = ''
+    GMAIL_SENDER_ADDRESS: str = ''
     DAILY_DISCOVERY_CAP: int = 20
+    DAILY_EMAIL_CAP: int = 20
+    DAILY_GITHUB_CAP: int = 5
+    DAILY_LINKEDIN_CAP: int = 10
     DISCOVERY_INTERVAL_HOURS: int = 12
     DB_PATH: str = 'adela.db'
     DASHBOARD_TOKEN: str = 'dev-token'

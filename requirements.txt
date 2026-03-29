@@ -12,3 +12,5 @@ pytest
 pytest-asyncio
 anthropic
 firecrawl-py
+composio-core>=0.7.0
+composio-langchain>=0.7.0
