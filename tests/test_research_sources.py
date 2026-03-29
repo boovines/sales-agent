@@ -5,6 +5,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
 from adela_outbound.agents.research.sources.firecrawl import scrape
+from adela_outbound.agents.research.sources.github import research_org
 from adela_outbound.agents.research.sources.perplexity import synthesise
 
 
@@ -66,3 +67,58 @@ async def test_perplexity_returns_synthesis_on_success():
             assert result['success'] is True
             assert 'TestCo' in result['synthesis']
             assert len(result['sources']) == 1
+
+
+@pytest.mark.asyncio
+async def test_github_research_org_returns_empty_on_missing_token():
+    with patch('adela_outbound.agents.research.sources.github.config') as m:
+        m.GITHUB_TOKEN = ''
+        result = await research_org('testorg')
+        assert result['success'] is False
+
+
+@pytest.mark.asyncio
+async def test_github_research_org_returns_empty_on_empty_handle():
+    result = await research_org('')
+    assert result['success'] is False
+
+
+@pytest.mark.asyncio
+async def test_github_research_org_detects_opportunity_issues():
+    with patch('adela_outbound.agents.research.sources.github.config') as m:
+        m.GITHUB_TOKEN = 'test'
+
+        repos_response = MagicMock()
+        repos_response.status_code = 200
+        repos_response.json.return_value = [
+            {
+                'name': 'fde-toolkit',
+                'description': 'enterprise toolkit',
+                'topics': [],
+                'stargazers_count': 5,
+                'html_url': 'https://github.com/testorg/fde-toolkit',
+            }
+        ]
+
+        issues_response = MagicMock()
+        issues_response.status_code = 200
+        issues_response.json.return_value = [
+            {
+                'title': 'Multi-tenant context isolation',
+                'body': 'Need better context management across client deployments',
+                'html_url': 'https://github.com/testorg/fde-toolkit/issues/1',
+                'number': 1,
+            }
+        ]
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=[repos_response, issues_response])
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch('adela_outbound.agents.research.sources.github.httpx.AsyncClient', return_value=mock_client):
+            result = await research_org('testorg')
+
+        assert result['success'] is True
+        assert len(result['adela_opportunity_issues']) == 1
+        assert 'context' in result['adela_opportunity_issues'][0]['matched_keywords']
