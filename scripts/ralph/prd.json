@@ -273,7 +273,7 @@
       "id": "US-008",
       "title": "Weekly ICP refinement suggestion job",
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "description": "Implement the APScheduler job that runs weekly, analyses recent rejection patterns using Claude, and saves up to 3 ICP refinement suggestions to the icp_suggestions table.",
       "acceptanceCriteria": [
         "adela_outbound/agents/qualification/icp.py \u2014 add weekly suggestion generation function.",

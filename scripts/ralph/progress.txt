@@ -127,3 +127,17 @@
   - Route ordering: /icp and /icp/suggestions placed before /{company_id}/brief to avoid path param capture
   - accept_suggestion parses suggestion_text as JSON criteria — suggestion_text must contain serialized criteria list (enforced by US-008 weekly job)
 ---
+
+## 2026-03-29 - US-008
+- Added generate_icp_suggestions() to icp.py — weekly job that analyses last 30 days of icp_feedback via Claude and saves up to 3 ICP refinement suggestions
+- Added _register_weekly_job() and on_startup=[_register_weekly_job] to qualification router — registers APScheduler cron job (Sunday 20:00) on the existing scheduler singleton without modifying scheduler.py
+- Files changed:
+  - adela_outbound/agents/qualification/icp.py (added generate_icp_suggestions function)
+  - adela_outbound/api/routers/qualification.py (added _register_weekly_job startup callback, logger)
+- All 9 tests PASSED
+- **Learnings for future iterations:**
+  - Router on_startup is a FastAPI feature — callbacks fire when app starts, same as lifespan handlers
+  - scheduler.add_job with replace_existing=True is safe to call multiple times (idempotent)
+  - generate_icp_suggestions uses separate get_db() context managers for read and write — avoids holding connection open during Claude call
+  - save_icp_suggestion stores new_criteria as JSON string in suggestion_text field — accept_suggestion endpoint parses it back
+---
