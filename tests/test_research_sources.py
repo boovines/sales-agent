@@ -6,6 +6,7 @@ import pytest
 
 from adela_outbound.agents.research.sources.firecrawl import scrape
 from adela_outbound.agents.research.sources.github import research_org
+from adela_outbound.agents.research.sources.grok import get_founder_context
 from adela_outbound.agents.research.sources.perplexity import synthesise
 
 
@@ -122,3 +123,19 @@ async def test_github_research_org_detects_opportunity_issues():
         assert result['success'] is True
         assert len(result['adela_opportunity_issues']) == 1
         assert 'context' in result['adela_opportunity_issues'][0]['matched_keywords']
+
+
+@pytest.mark.asyncio
+async def test_grok_returns_failure_on_no_handle():
+    result = await get_founder_context('Test Co', None)
+    assert result['success'] is False
+    assert result['recent_focus'] == ''
+    assert result['pain_points_mentioned'] == []
+
+
+@pytest.mark.asyncio
+async def test_grok_returns_failure_on_missing_key():
+    with patch('adela_outbound.agents.research.sources.grok.config') as m:
+        m.GROK_API_KEY = ''
+        result = await get_founder_context('Test Co', 'testhandle')
+        assert result['success'] is False
